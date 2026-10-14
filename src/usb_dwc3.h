@@ -30,4 +30,9 @@ size_t usb_dwc3_write(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe, const void *buf, 
 size_t usb_dwc3_queue(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe, const void *buf, size_t count);
 void usb_dwc3_flush(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe);
 
+/* Nonblocking diagnostic transport: caller supplies deadlines and polls. */
+size_t usb_dwc3_try_read(dwc3_dev_t *, cdc_acm_pipe_id_t, void *, size_t);
+size_t usb_dwc3_try_write(dwc3_dev_t *, cdc_acm_pipe_id_t, const void *, size_t);
+bool usb_dwc3_tx_idle(dwc3_dev_t *, cdc_acm_pipe_id_t);
+
 #endif

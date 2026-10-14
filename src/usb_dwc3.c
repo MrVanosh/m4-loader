@@ -8,6 +8,10 @@
  */
 
 #include "../build/build_tag.h"
+#include "../build/build_cfg.h"
+#ifdef J616S_SCREEN_DIAGNOSTIC
+#include "j616s_usb.h"
+#endif
 
 #include "usb_dwc3.h"
 #include "adt.h"
@@ -138,7 +142,11 @@ typedef struct dwc3_dev {
 static const struct usb_string_descriptor str_manufacturer =
     make_usb_string_descriptor("Gravity Linux");
 static const struct usb_string_descriptor str_product =
+    #ifdef J616S_SCREEN_DIAGNOSTIC
+    make_usb_string_descriptor("M4 V15 RAM workbench");
+#else
     make_usb_string_descriptor("m1n1 uartproxy " BUILD_TAG);
+#endif
 static const struct usb_string_descriptor str_serial_dummy = make_usb_string_descriptor("P-0");
 static const struct usb_string_descriptor *str_serial;
 
@@ -382,6 +390,9 @@ static int usb_dwc3_command(dwc3_dev_t *dev, u32 command, u32 par)
     write32(dev->regs + DWC3_DGCMD, command | DWC3_DGCMD_CMDACT);
 
     if (poll32(dev->regs + DWC3_DGCMD, DWC3_DGCMD_CMDACT, 0, 1000)) {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+        j616s_usb_abort(87);
+#endif
         usb_debug_printf("timeout while waiting for DWC3_DGCMD_CMDACT to clear.\n");
         return -1;
     }
@@ -391,12 +402,18 @@ static int usb_dwc3_command(dwc3_dev_t *dev, u32 command, u32 par)
 
 static int usb_dwc3_ep_command(dwc3_dev_t *dev, u8 ep, u32 command, u32 par0, u32 par1, u32 par2)
 {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    if(ep>=MAX_ENDPOINTS) j616s_usb_abort(89);
+#endif
     write32(dev->regs + DWC3_DEPCMDPAR0(ep), par0);
     write32(dev->regs + DWC3_DEPCMDPAR1(ep), par1);
     write32(dev->regs + DWC3_DEPCMDPAR2(ep), par2);
     write32(dev->regs + DWC3_DEPCMD(ep), command | DWC3_DEPCMD_CMDACT);
 
     if (poll32(dev->regs + DWC3_DEPCMD(ep), DWC3_DEPCMD_CMDACT, 0, 1000)) {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+        j616s_usb_abort(88);
+#endif
         usb_debug_printf("timeout while waiting for DWC3_DEPCMD_CMDACT to clear.\n");
         return -1;
     }
@@ -535,6 +552,10 @@ static void usb_build_serial(void)
     if (str_serial)
         return;
 
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    str_serial = &str_serial_dummy;
+    return;
+#endif
     const char *serial = adt_getprop(adt, 0, "serial-number", NULL);
     if (!serial || !serial[0]) {
         str_serial = &str_serial_dummy;
@@ -764,6 +785,13 @@ static void usb_dwc3_ep0_handle_standard(dwc3_dev_t *dev, const union usb_setup_
 static void usb_dwc3_ep0_handle_class(dwc3_dev_t *dev, const union usb_setup_packet *setup)
 {
     int pipe = setup->raw.wIndex / 2;
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    if(pipe>=CDC_ACM_PIPE_MAX || setup->raw.wIndex%2) {
+        usb_dwc3_ep_set_stall(dev,0,1);
+        dev->ep0_state=USB_DWC3_EP0_STATE_IDLE;
+        return;
+    }
+#endif
 
     switch (setup->raw.bRequest) {
         case USB_REQUEST_CDC_GET_LINE_CODING:
@@ -918,7 +946,8 @@ static void usb_dwc3_cdc_start_bulk_out_xfer(dwc3_dev_t *dev, u8 endpoint_number
     if (!host2device)
         return;
 
-    if (ringbuffer_get_free(host2device) < XFER_SIZE)
+    /* The ring reserves one empty slot to distinguish full from empty. */
+    if (ringbuffer_get_free(host2device) <= XFER_SIZE)
         return;
 
     memset(dev->endpoints[endpoint_number].xfer_buffer, 0xaa, XFER_SIZE);
@@ -954,7 +983,8 @@ static void usb_dwc3_cdc_start_bulk_in_xfer(dwc3_dev_t *dev, u8 endpoint_number)
 
     usb_dwc3_ep_start_transfer(dev, endpoint_number, trb_iova);
     dev->endpoints[endpoint_number].xfer_in_progress = true;
-    dev->endpoints[endpoint_number].zlp_pending = (len % 512) == 0;
+    /* A ZLP itself must not schedule an endless sequence of more ZLPs. */
+    dev->endpoints[endpoint_number].zlp_pending = len && (len % 512) == 0;
 }
 
 static void usb_dwc3_cdc_handle_bulk_out_xfer_done(dwc3_dev_t *dev,
@@ -963,9 +993,16 @@ static void usb_dwc3_cdc_handle_bulk_out_xfer_done(dwc3_dev_t *dev,
     ringbuffer_t *host2device = usb_dwc3_cdc_get_ringbuffer(dev, event.endpoint_number);
     if (!host2device)
         return;
-    size_t len = min(XFER_SIZE, ringbuffer_get_free(host2device));
+    size_t len = min(XFER_SIZE, ringbuffer_get_free(host2device)-1);
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    u32 residual = dev->endpoints[event.endpoint_number].trb->size & DWC3_TRB_SIZE_MASK;
+    if(residual>XFER_SIZE || XFER_SIZE-residual>len) j616s_usb_abort(93);
+    ringbuffer_write(dev->endpoints[event.endpoint_number].xfer_buffer,
+                     XFER_SIZE-residual,host2device);
+#else
     ringbuffer_write(dev->endpoints[event.endpoint_number].xfer_buffer,
                      len - dev->endpoints[event.endpoint_number].trb->size, host2device);
+#endif
 }
 
 static void usb_dwc3_handle_event_ep(dwc3_dev_t *dev, const struct dwc3_event_depevt event)
@@ -1067,6 +1104,12 @@ static void usb_dwc3_handle_event_dev(dwc3_dev_t *dev, const struct dwc3_event_d
 
 static void usb_dwc3_handle_event(dwc3_dev_t *dev, const union dwc3_event event)
 {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    if((!event.type.is_devspec &&
+         (event.depevt.endpoint_number>=MAX_ENDPOINTS || event.depevt.endpoint_event>=8)) ||
+       (event.type.is_devspec && event.type.type==DWC3_EVENT_TYPE_DEV && event.devt.type>=13))
+        j616s_usb_abort(85);
+#endif
     if (!event.type.is_devspec)
         usb_dwc3_handle_event_ep(dev, event.depevt);
     else if (event.type.type == DWC3_EVENT_TYPE_DEV)
@@ -1080,7 +1123,11 @@ void usb_dwc3_handle_events(dwc3_dev_t *dev)
     if (!dev)
         return;
 
-    u32 n_events = read32(dev->regs + DWC3_GEVNTCOUNT(0)) / sizeof(union dwc3_event);
+    u32 count = read32(dev->regs + DWC3_GEVNTCOUNT(0));
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    if(count>DWC3_EVENT_BUFFERS_SIZE || count%sizeof(union dwc3_event)) j616s_usb_abort(84);
+#endif
+    u32 n_events = count / sizeof(union dwc3_event);
     if (n_events == 0)
         return;
 
@@ -1268,6 +1315,17 @@ error:
 
 void usb_dwc3_shutdown(dwc3_dev_t *dev)
 {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    /* No freeing/unmapping or bypass, even on init failure. Retain the whole
+     * arena until power-off. A halted-controller timeout aborts the trial. */
+    if(!dev) return;
+    write32(dev->regs+DWC3_DEVTEN,0);
+    clear32(dev->regs+DWC3_DCTL,DWC3_DCTL_RUN_STOP);
+    if(poll32(dev->regs+DWC3_DSTS,DWC3_DSTS_DEVCTRLHLT,DWC3_DSTS_DEVCTRLHLT,10000))
+        j616s_usb_abort(86);
+    write32(dev->regs+DWC3_DALEPENA,0);
+    return;
+#endif
     for (int i = 0; i < CDC_ACM_PIPE_MAX; i++)
         dev->pipe[i].ready = false;
 
@@ -1446,4 +1504,26 @@ void usb_dwc3_flush(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe)
     while (ringbuffer_get_used(device2host) != 0 || dev->endpoints[ep].xfer_in_progress) {
         usb_dwc3_handle_events(dev);
     }
+}
+
+size_t usb_dwc3_try_read(dwc3_dev_t *dev,cdc_acm_pipe_id_t pipe,void *buf,size_t n)
+{
+    if(!dev || (unsigned)pipe>=CDC_ACM_PIPE_MAX || !dev->pipe[pipe].ready) return 0;
+    size_t got=ringbuffer_read(buf,n,dev->pipe[pipe].host2device);
+    usb_dwc3_cdc_start_bulk_out_xfer(dev,dev->pipe[pipe].ep_out);
+    return got;
+}
+size_t usb_dwc3_try_write(dwc3_dev_t *dev,cdc_acm_pipe_id_t pipe,const void *buf,size_t n)
+{
+    if(!dev || (unsigned)pipe>=CDC_ACM_PIPE_MAX || !dev->pipe[pipe].ready) return 0;
+    size_t sent=ringbuffer_write(buf,n,dev->pipe[pipe].device2host);
+    usb_dwc3_cdc_start_bulk_in_xfer(dev,dev->pipe[pipe].ep_in);
+    return sent;
+}
+bool usb_dwc3_tx_idle(dwc3_dev_t *dev,cdc_acm_pipe_id_t pipe)
+{
+    if(!dev || (unsigned)pipe>=CDC_ACM_PIPE_MAX) return false;
+    u8 ep=dev->pipe[pipe].ep_in;
+    return !ringbuffer_get_used(dev->pipe[pipe].device2host) &&
+           !dev->endpoints[ep].xfer_in_progress && !dev->endpoints[ep].zlp_pending;
 }

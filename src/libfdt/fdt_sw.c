@@ -9,6 +9,10 @@
 #include "libfdt.h"
 
 #include "libfdt_internal.h"
+#ifdef M4_LOADER
+#include "../standalone/fdt-ram.h"
+#define memmove m4_fdt_ram_move
+#endif
 
 static int fdt_sw_probe_(void *fdt)
 {

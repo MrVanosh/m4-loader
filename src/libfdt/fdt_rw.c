@@ -9,6 +9,10 @@
 #include "libfdt.h"
 
 #include "libfdt_internal.h"
+#ifdef M4_LOADER
+#include "../standalone/fdt-ram.h"
+#define memmove m4_fdt_ram_move
+#endif
 
 static int fdt_blocks_misordered_(const void *fdt,
 				  int mem_rsv_size, int struct_size)

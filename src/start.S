@@ -107,15 +107,8 @@ _start:
     b .
 
 start_el3:
-    bl exception_initialize
-    adrp x8, _stack_bot_el3
-    mov sp, x8
-    mov x0, x19
-    mov x1, x20
-    msr tpidr_el3, xzr
-    adrp x6, _stack_bot
-    adr x7, _start_c
-    b el3_eret_to_el1
+    msr DAIFSet, #15
+1:  b 1b
 
 .globl exc_unk
 .type exc_unk, @function
@@ -147,51 +140,8 @@ exc_unk:
 .globl cpu_reset
 .type cpu_reset, @function
 cpu_reset:
-    mov w0, 'O'
-    bl debug_putc
-
-    adrp x1, _reset_stack
-    add x1, x1, :lo12:_reset_stack
-    ldr x1, [x1]
-    mov sp, x1
-
-    ldr x2, [sp, #-8]
-
-    mov w0, 'K'
-    bl debug_putc
-
-    mov x0, sp
-
-    mrs x8, CurrentEL
-    cmp x8, #0xc
-    beq cpu_reset_el3
-
-    bl _cpu_reset_c
-    b .
-
-cpu_reset_el3:
-    bl _cpu_reset_c
-    adrp x6, _reset_stack_el1
-    add x6, x6, :lo12:_reset_stack_el1
-    ldr x6, [x6]
-    mov x0, x6
-    adr x7, _cpu_reset_c
-
-el3_eret_to_el1:
-    adr x8, _vectors_start
-    msr sctlr_el1, xzr
-
-    mrs x8, scr_el3
-    orr x8, x8, #(1<<10) // EL1 execution state is AArch64
-    orr x8, x8, #(1<<0)  // EL1 is non-secure
-    msr scr_el3, x8
-    msr elr_el3, x7 // Set EL1 entry point
-    mov x8, #0x5 // EL1h
-    msr spsr_el3, x8
-
-    msr sp_el1, x6 // Set EL1 stack pointer
-
-    eret
+    msr DAIFSet, #15
+    b m4_direct_smp_reset
 
 .globl debug_putc
 .type debug_putc, @function

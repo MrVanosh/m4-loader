@@ -188,7 +188,6 @@ void init_cpu(void)
     int part = FIELD_GET(MIDR_PART, midr);
     int rev = (FIELD_GET(MIDR_REV_HIGH, midr) << 4) | FIELD_GET(MIDR_REV_LOW, midr);
 
-    printf("  CPU part: 0x%x rev: 0x%x\n", part, rev);
 
     for (size_t i = 0; i < sizeof(midr_parts) / sizeof(midr_parts[0]); i++) {
         if (midr_parts[i].part == part) {
@@ -200,7 +199,6 @@ void init_cpu(void)
     if (!midr_part_info)
         midr_part_info = &midr_part_info_unknown;
 
-    printf("  CPU: %s\n", midr_part_info->name);
 
     cpu_features = midr_part_info->features;
 

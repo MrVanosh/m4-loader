@@ -72,11 +72,18 @@ SECTIONS {
         *(COMMON)
         _bss_end = .;
     } : data
-    .stack_el3 : ALIGN(0x4000) {
-        PROVIDE(_stack_top_el3 = .);
-        . += _stack_size_el3 - 8;
-        QUAD(0x5176694b43415453);
-        PROVIDE(_stack_bot_el3 = .);
+    /* R39 Level 1: the EL3 stack slot (the loader never runs at EL3) carries the
+     * Level 1 blob, so no pinned offset (DESCRIPTOR, ADT, CUR_BOOT_ARGS, _end)
+     * moves. The cache layout maps it read-only+executable. */
+    .l1 : ALIGN(0x4000) {
+        PROVIDE(_l1_start = .);
+        *(.l1blob)
+        ASSERT(. - _l1_start <= _stack_size_el3 - 16, "Level 1 blob does not fit the EL3 stack slot");
+        . = _l1_start + _stack_size_el3 - 8;
+        QUAD(0x31314c3433364d4c); /* end marker */
+        PROVIDE(_l1_end = .);
+        PROVIDE(_stack_top_el3 = _l1_start);
+        PROVIDE(_stack_bot_el3 = _l1_end);
     }
     .stack : ALIGN(0x4000) {
         PROVIDE(_stack_top = .);

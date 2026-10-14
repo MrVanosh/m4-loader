@@ -65,15 +65,65 @@ BASE_CFLAGS := -O2 -Wall -g -Wundef -Werror=strict-prototypes -fno-common -fno-P
 	-fno-stack-protector -mstrict-align -march=armv8.2-a \
 	$(EXTRA_CFLAGS)
 
-CFLAGS := $(BASE_CFLAGS) -mgeneral-regs-only
+CFLAGS := $(BASE_CFLAGS) -mgeneral-regs-only -DM4_LOADER -Isrc/libfdt
 
 CFG :=
+ifeq ($(J616S_SCREEN_DIAGNOSTIC),1)
+CFG += J616S_SCREEN_DIAGNOSTIC J616S_MEMORY_DIAGNOSTIC
+endif
 ifeq ($(RELEASE),1)
 CFG += RELEASE
 endif
 
 ifeq ($(NO_DISPLAY),1)
 CFG += NO_DISPLAY
+endif
+
+# DCP bring-up test builds: M4_DCP_STAGE=1|2|3 (see standalone/dcp-fdt.c).
+# Unset leaves the default loader unchanged (no DCP code is built).
+DCP_FDT_OBJECTS :=
+ifneq ($(M4_DCP_STAGE),)
+CFLAGS += -DM4_DCP_STAGE=$(M4_DCP_STAGE)
+DCP_FDT_OBJECTS := standalone/dcp-fdt.o
+endif
+
+# Round11 bring-up/USB-C metadata export on collection boots only (non-DCP
+# builds); normal boots skip it. Unset leaves it out.
+ifeq ($(M4_BRINGUP_EXPORT),1)
+CFLAGS += -DM4_BRINGUP_EXPORT
+endif
+
+# Previous fully uncached loader (no cached windows); the rest of R34 stays.
+ifeq ($(M4_LOADER_UNCACHED),1)
+CFLAGS += -DM4_LOADER_UNCACHED
+endif
+
+# Previous one-peer-at-a-time start (wait for READY before the next launch).
+ifeq ($(M4_SMP_SEQUENTIAL),1)
+CFLAGS += -DM4_SMP_SEQUENTIAL
+endif
+
+# R34 scheduler topology: /cpus/cpu-map and capacity-dmips-mhz in the Linux DT.
+# Off by default: the pinned GPU module refuses a /cpus child without a reg
+# (see src/standalone/direct-fdt.c). Needs diffs/capture-dt.h.diff in the GPU.
+ifeq ($(M4_CPU_TOPOLOGY),1)
+CFLAGS += -DM4_CPU_TOPOLOGY
+endif
+
+# R36 multicore E0: read-only idle/wake register record (standalone/cpu-idle-regs.c), on by default.
+# M4_NO_CPU_IDLE_READ=1 reads nothing and publishes nothing.
+ifeq ($(M4_NO_CPU_IDLE_READ),1)
+CFLAGS += -DM4_NO_CPU_IDLE_READ
+endif
+
+# Kernel boots with sched_verbose: domain spans and capacities in the log.
+ifeq ($(M4_SCHED_VERBOSE),1)
+CFLAGS += -DM4_SCHED_VERBOSE
+endif
+
+# Collect firmware memory metadata, then stop before normal hardware startup.
+ifeq ($(J616S_MEMORY_DIAGNOSTIC),1)
+CFG += J616S_MEMORY_DIAGNOSTIC
 endif
 
 # Required for no_std + alloc for now
@@ -90,9 +140,14 @@ CFG += CHAINLOADING
 CARGO_FLAGS += --features chainload
 endif
 
-LDFLAGS := -EL -maarch64elf --no-undefined -X -Bsymbolic \
+LDFLAGS := --gc-sections -EL -maarch64elf --no-undefined -X -Bsymbolic \
 	-z notext --no-apply-dynamic-relocs --orphan-handling=warn \
 	-z nocopyreloc --gc-sections -pie
+ifeq ($(J616S_SCREEN_DIAGNOSTIC),1)
+LDFLAGS += --wrap=malloc --wrap=calloc --wrap=memalign --wrap=free --wrap=realloc \
+	--wrap=printf --wrap=debug_printf --wrap=__assert_fail \
+	--wrap=iodev_console_write --wrap=flush_and_reboot
+endif
 
 MINILZLIB_OBJECTS := $(patsubst %,minilzlib/%, \
 	dictbuf.o inputbuf.o lzma2dec.o lzmadec.o rangedec.o xzstream.o)
@@ -153,6 +208,10 @@ OBJECTS := \
 	iodev.o \
 	iova.o \
 	isp.o \
+	standalone/loader.o standalone/fixups.o standalone/boot-timing.o standalone/boot-profile.o standalone/direct-smp.o standalone/direct-smp-entry.o standalone/direct-smp-release.o standalone/direct-entry.o standalone/dart-capture.o standalone/display-handoff.o standalone/display-handoff-native.o $(DCP_FDT_OBJECTS) standalone/dart-tables.o standalone/dart-preserve.o standalone/display-ownership.o standalone/dapf.o standalone/fdt-check.o standalone/metadata.o standalone/memory.o standalone/mcc.o standalone/watchdog.o standalone/direct-bluetooth.o standalone/bt-boot-admission.o standalone/bt-boot-current-adt.o standalone/payload.o \
+	j616s_diag.o \
+	j616s_screen.o \
+	j616s_probe.o j616s_probe_asm.o j616s_mmu.o j616s_mmu_asm.o j616s_pt.o j616s_usb.o j616s_usb_plan.o j616s_usb_asm.o j616s_exec_asm.o j616s_proxy.o \
 	kboot.o kboot_atc.o \
 	kboot_t6020_compat.o \
 	main.o \
@@ -185,7 +244,9 @@ OBJECTS := \
 	wdt.o \
 	$(CHICKENS_OBJECTS) \
 	$(DCP_OBJECTS) \
-	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS)
+	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) \
+	standalone/loader-cache.o standalone/loader-cache-asm.o standalone/loader-speed.o \
+	standalone/cpu-idle-regs.o
 
 FP_OBJECTS := \
 	kboot_gpu.o \
@@ -193,6 +254,58 @@ FP_OBJECTS := \
 	math/exp2f_data.o \
 	math/powf.o \
 	math/powf_data.o
+
+# R39 Level 1: kernel and initrd as files from the SSD. M4_LEVEL1=1 is the
+# `desktop` carrier (tries the SSD first), M4_LEVEL1=0 the `embedded` carrier
+# (the attempt is never started). M4_CARRIER_ID is the 16-hex carrier id (the
+# build script patches it into the image with tools/carrier-id.py when the
+# final initrd is not known at compile time).
+M4_LEVEL1 ?= 0
+CFLAGS += -DM4_LEVEL1=$(M4_LEVEL1)
+# /chosen m4,loader-version: the release id the carrier build stamps (default rev11)
+ifneq ($(M4_LOADER_VERSION),)
+CFLAGS += -DM4_LOADER_VERSION=\"$(M4_LOADER_VERSION)\"
+endif
+# The Level 1 code is a position-independent blob: its own compile and link
+# (no dynamic relocations, no writable data), embedded into the .l1 section.
+L1_NAMES := level1-sha256 level1-ext4 level1-core level1-ans level1-blob level1-libc
+L1_FLAGS := -Os -fno-tree-switch-conversion -fno-pic -fno-PIE -mcmodel=tiny -ffreestanding -fno-builtin -fno-stack-protector -mstrict-align \
+	-march=armv8.2-a -mgeneral-regs-only -fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-ffunction-sections -fdata-sections -fno-tree-loop-distribute-patterns -fno-common -Wall \
+	-nostdinc -isystem $(shell $(CC) -print-file-name=include) -Isrc/standalone \
+	-DM4_LEVEL1=$(M4_LEVEL1)
+L1_OBJS := $(patsubst %,build/level1/%.o,$(L1_NAMES)) build/level1/level1-header.o
+build/level1/%.o: src/standalone/%.c
+	$(QUIET)echo "  L1CC  $@"
+	$(QUIET)mkdir -p build/level1
+	$(QUIET)$(CC) -c $(L1_FLAGS) -o $@ $<
+build/level1/level1-header.o: src/standalone/level1-header.S
+	$(QUIET)mkdir -p build/level1
+	$(QUIET)$(CC) -c $(L1_FLAGS) -o $@ $<
+build/level1.elf: $(L1_OBJS) src/standalone/level1.ld
+	$(QUIET)echo "  L1CHK no absolute relocations in the blob"
+	$(QUIET)for o in $(filter-out %level1-header.o,$(L1_OBJS)); do \
+	  if $(subst objcopy,readelf,$(OBJCOPY)) -rW $$o | grep -q "R_AARCH64_.*ABS"; then \
+	    echo "$$o has an absolute data relocation: the Level 1 blob is never relocated (no pointer tables)"; exit 1; fi; done
+	$(QUIET)echo "  L1LD  $@"
+	$(QUIET)$(LD) -T src/standalone/level1.ld --gc-sections -static -nostdlib -EL -maarch64elf -o $@ $(L1_OBJS)
+build/level1.bin: build/level1.elf
+	$(QUIET)echo "  L1BIN $@"
+	$(QUIET)$(OBJCOPY) -O binary $< $@
+build/standalone/level1-embed.o: build/level1.bin
+# the shim adds no GOT entries / dynamic relocations (loader rodata+rela headroom is tiny)
+build/standalone/level1-shim.o: CFLAGS += -fvisibility=hidden
+# loader-side Level 1 code is size-sensitive (loader .text headroom is the budget): -Os
+build/standalone/level1-addr.o: CFLAGS += -Os -fvisibility=hidden
+OBJECTS += standalone/level1-shim.o standalone/level1-embed.o standalone/level1-guard.o standalone/level1-addr.o
+
+# R36 media lane: disabled audio/AVD nodes and the guarded register probe
+# (standalone/media-probe.c). Part of the stage-3 loader without a flag;
+# M4_MEDIA_NO_PROBE=1 keeps the nodes and reservations but reads no register.
+OBJECTS += standalone/media-probe.o
+ifeq ($(M4_MEDIA_NO_PROBE),1)
+CFLAGS += -DM4_MEDIA_NO_PROBE
+endif
 
 BUILD_OBJS := $(patsubst %,build/%,$(OBJECTS))
 BUILD_FP_OBJS := $(patsubst %,build/%,$(FP_OBJECTS))

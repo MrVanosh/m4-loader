@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
+
 #include "adt.h"
 #include "chickens.h"
 #include "dockchannel_uart.h"
 #include "exception.h"
 #include "firmware.h"
+#include "j616s_diag.h"
 #include "smp.h"
 #include "string.h"
 #include "types.h"
@@ -159,17 +162,48 @@ void dump_boot_args(struct boot_args *ba)
 }
 
 extern void get_device_info(void);
+#ifdef J616S_SCREEN_DIAGNOSTIC
+#include "j616s_boot_prefix.h"
+#include "standalone/boot-timing.h"
+extern void j616s_screen_entry(void) __attribute__((noreturn));
+#endif
 void _start_c(void *boot_args, void *base)
 {
     UNUSED(base);
     u32 cpu_id = 0;
 
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    /* Preserve the sample in the stack/registers until BSS has been cleared. */
+    u64 before_bss = m4_boot_counter();
+#endif
     memset64(_bss_start, 0, _bss_end - _bss_start);
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    u64 after_bss = m4_boot_counter();
+    m4_boot_ticks[M4_BOOT_BEFORE_BSS] = before_bss;
+    m4_boot_ticks[M4_BOOT_BSS_READY] = after_bss;
+#endif
     boot_args_addr = (u64)boot_args;
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    /* The early screen uses only the common prefix. A rejected revision
+     * reads no more than its four-byte revision/version header. */
+    if (j616s_copy_boot_prefix(&cur_boot_args, boot_args))
+        adt = (void *)(((u64)cur_boot_args.devtree) - cur_boot_args.virt_base +
+                      cur_boot_args.phys_base);
+#else
     memcpy(&cur_boot_args, boot_args, sizeof(cur_boot_args));
 
     adt =
         (void *)(((u64)cur_boot_args.devtree) - cur_boot_args.virt_base + cur_boot_args.phys_base);
+#endif
+
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    /* Firmware framebuffer only: no UART, CPU/MMU setup, USB or payload. */
+    j616s_screen_entry();
+#elif defined(J616S_MEMORY_DIAGNOSTIC)
+    /* No CPU feature setup, new MMU mappings, USB, proxy or payload execution. */
+    uart_init();
+    j616s_diag_run();
+#endif
 
 #ifndef BRINGUP
     int node = adt_path_offset(adt, "/cpus");

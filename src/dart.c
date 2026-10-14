@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
+#ifdef J616S_SCREEN_DIAGNOSTIC
+#include "j616s_usb.h"
+#endif
 #include "dart.h"
 #include "adt.h"
 #include "assert.h"
@@ -141,8 +145,13 @@ static void dart_t8110_tlb_invalidate(dart_dev_t *dart)
             FIELD_PREP(DART_T8110_TLB_CMD_OP, DART_T8110_TLB_CMD_OP_FLUSH_SID) |
                 FIELD_PREP(DART_T8110_TLB_CMD_STREAM, dart->device));
 
-    if (poll32(dart->regs + DART_T8110_TLB_CMD_OP, DART_T8110_TLB_CMD_BUSY, 0, 100))
+    if (poll32(dart->regs + DART_T8110_TLB_CMD, DART_T8110_TLB_CMD_BUSY, 0, 100)) {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+        j616s_usb_abort(80);
+#else
         printf("dart: DART_T8110_TLB_CMD_BUSY did not clear.\n");
+#endif
+    }
 }
 
 const struct dart_params dart_t8020 = {
@@ -195,6 +204,11 @@ const struct dart_params dart_t8110 = {
 
 dart_dev_t *dart_init(uintptr_t base, u8 device, bool keep_pts, enum dart_type_t type)
 {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    /* Refuse firmware tables/locked configuration before any DART write. */
+    if(type!=DART_T8110 || keep_pts || (read32(base+DART_T8110_PROTECT)&1))
+        return NULL;
+#endif
     dart_dev_t *dart = calloc(1, sizeof(*dart));
     if (!dart)
         return NULL;
@@ -231,6 +245,14 @@ dart_dev_t *dart_init(uintptr_t base, u8 device, bool keep_pts, enum dart_type_t
         case DART_T8110:
             if (read32(dart->regs + DART_T8110_PROTECT) & DART_T8110_PROTECT_TTBR_TCR)
                 dart->locked = true;
+#ifdef J616S_SCREEN_DIAGNOSTIC
+            if(dart->locked) j616s_usb_abort(81);
+            /* Controller is halted. Disable translation and clear only this
+             * stream's table pointer before installing our own table. Zero
+             * does NOT request either DART or DAPF bypass. */
+            write32(DART_TCR(dart),0);
+            write32(DART_TTBR(dart,0),0);
+#endif
             write32(dart->regs + DART_T8110_ENABLE_STREAMS + 4 * (device >> 5), BIT(device & 0x1f));
             break;
     }
@@ -541,6 +563,10 @@ static int dart_map_page(dart_dev_t *dart, uintptr_t iova, uintptr_t paddr, u32 
 
 int dart_map_flags(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len, u32 flags)
 {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    if(dart->type!=DART_T8110 || !j616s_usb_owned(bfr,len) ||
+       iova>0x100000000UL || len>0x100000000UL-iova) j616s_usb_abort(82);
+#endif
     uintptr_t paddr = (uintptr_t)bfr;
     u64 offset = 0;
 
@@ -732,6 +758,11 @@ u64 dart_find_iova(dart_dev_t *dart, s64 start, size_t len)
 
 void dart_shutdown(dart_dev_t *dart)
 {
+#ifdef J616S_SCREEN_DIAGNOSTIC
+    /* Never enter the generic bypass/free path in this candidate. */
+    (void)dart;
+    j616s_usb_abort(83);
+#endif
     if (!dart->locked && !dart->keep)
         write32(DART_TCR(dart), dart->params->tcr_disabled);
 
