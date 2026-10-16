@@ -43,7 +43,7 @@ struct m4_direct_capture_page m4_direct_capture __attribute__((aligned(M4_SMP_PA
 /* GPU capture ABI keeps the accepted handoff layout without a duplicate. */
 __asm__(".global handoff\n.set handoff,m4_direct_capture+256\n");
 #define handoff m4_direct_capture.handoff
-_Static_assert(M4_FDT_CAPACITY == 0x10000, "DT slot capacity");
+_Static_assert(M4_FDT_CAPACITY == 0x20000, "DT slot capacity");
 static u8 tree[M4_FDT_CAPACITY] __attribute__((aligned(16384)));
 static u8 peripheral_tree[M4_FDT_CAPACITY] __attribute__((aligned(16384)));
 static u64 scratch[2048] __attribute__((aligned(16384)));
@@ -53,8 +53,8 @@ static bool attempted;
  * slot (loaded from the SSD, SHA-256 verified before it got here). */
 static const u8 *payload_kernel_src, *payload_initrd_src;
 /* The entry's board.dtb or its fix-ups were refused: the rescue set boots and the /chosen record says why. */
-/* board.dtb limit: the final DT must fit the 64 KiB slot after the fix-ups add ~27 KB (Wi-Fi and Bluetooth blobs, DCP) */
-#define M4_BOARD_DTB_MAX (36u * 1024)
+/* board.dtb limit: the final DT must fit the 128 KiB slot after the fix-ups add ~27 KB (Wi-Fi and Bluetooth blobs, DCP) */
+#define M4_BOARD_DTB_MAX (96u * 1024)
 static const char *demote_why;
 static int demote_rc;
 static char rescue_args[1100];
@@ -290,7 +290,7 @@ static int prepare(void)
     }
     m4_boot_profile_mark(M4_PROFILE_BLUETOOTH_READY);
     if (fdt_totalsize(tree) > M4_FDT_CAPACITY ||
-        dt_address + fdt_totalsize(tree) > (u64)arena+0x20000 ||
+        dt_address + fdt_totalsize(tree) > (u64)arena + 0x10000 + M4_FDT_CAPACITY ||
         dt_address + fdt_totalsize(tree) >= handoff.kernel ||
         !m4_contains(span, (struct m4_range){dt_address, fdt_totalsize(tree)})) return 18;
     /* The admitted Image overwrites its whole prefix; retain the required zero tail. */
@@ -348,10 +348,10 @@ void j616s_standalone_report(u64 lower, u64 upper)
          * stops the boot; SCTLR is back at the guard baseline here. */
         m4_cache_enter(); /* window: publication; ends before the branch to Linux */
         /* The late records use the 256 KiB DT window that ends at the kernel.
-         * Without the window buffers this is the previous 64 KiB slot. */
+         * Without the window buffers this is the 128 KiB slot. */
         void *dt = tree, *work = peripheral_tree;
         size_t capacity = sizeof(tree);
-        u64 limit = handoff.arena_base + 0x20000;
+        u64 limit = dt_address + M4_FDT_CAPACITY;
         if (m4_speed.late_capacity &&
             !fdt_open_into(tree, m4_speed.late_tree, (int)m4_speed.late_capacity)) {
             dt = m4_speed.late_tree; work = m4_speed.late_scratch;
@@ -361,6 +361,12 @@ void j616s_standalone_report(u64 lower, u64 upper)
         /* R36 E0: one small /chosen property; a refusal leaves the tree untouched. */
         (void)m4_cpu_idle_regs_publish(dt, capacity);
         (void)m4_level1_publish(dt, capacity); /* /chosen m4,loader-*, m4,boot-*, m4,ans-live, m4,ans-syslog */
+        /* rev 12: the board.dtb limit this loader accepts, for m4-boot (absent on rev 11 = 36,864 B) */
+        if (!fdt_open_into(dt, dt, (int)capacity)) {
+            int c = fdt_path_offset(dt, "/chosen");
+            if (c >= 0) fdt_setprop_u32(dt, c, "m4,board-dtb-max", M4_BOARD_DTB_MAX);
+            fdt_pack(dt);
+        }
         if (demote_why && !fdt_open_into(dt, dt, (int)capacity)) {
             int c = fdt_path_offset(dt, "/chosen");
             char detail[24];

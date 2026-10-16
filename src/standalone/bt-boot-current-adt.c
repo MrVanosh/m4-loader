@@ -22,7 +22,7 @@ int m4_bt_boot_admit_current(const void *fdt, size_t bytes,
     memset(report, 0, sizeof(*report));
     uint32_t total = adt_get_size(), chip = 0x6040;
     if (m4_dart_adt_bounds(adt, total) || adt_check_header(adt) || !fdt ||
-        bytes < sizeof(struct fdt_header) || bytes > 49152 || fdt_check_full(fdt, bytes))
+        bytes < sizeof(struct fdt_header) || bytes > 131072 || fdt_check_full(fdt, bytes)) /* rev 12: the 128 KiB slot */
         return -10;
     int chosen = adt_path_offset(adt, "/chosen"), path[8];
     int host = adt_path_offset_trace(adt, "/arm-io/apcie0", path);

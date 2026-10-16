@@ -13,9 +13,9 @@ static int m4_direct_peripheral_fdt(void *dt, size_t capacity,
 {
     int chosen, codec, bytes, rc, usb = 1;
     const char *contract;
-    /* The actual direct loader supplies 48KiB, with a bounded 64KiB successor.
-     * Only these two reviewed buffer capacities may reach the writer. */
-    if (!dt || !get || (capacity != 49152 && capacity != 65536) ||
+    /* The actual direct loader supplies 48KiB, with bounded 64KiB and 128KiB (rev 12) successors.
+     * Only these reviewed buffer capacities may reach the writer. */
+    if (!dt || !get || (capacity != 49152 && capacity != 65536 && capacity != 131072) ||
         fdt_check_full(dt, capacity) ||
         fdt_node_check_compatible(dt, 0, "apple,j616s") ||
         fdt_node_check_compatible(dt, 0, "apple,t6040")) return -1;
