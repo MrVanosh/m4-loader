@@ -26,6 +26,7 @@
 #include "media-probe.h"
 #include "level1-glue.h"
 #include "fixups.h"
+#include "pmp-publish.h"
 
 extern char _base[], _end[], _rodata_end[];
 extern u8 m4_kernel[], m4_kernel_end[], m4_initrd[], m4_initrd_end[], m4_template[];
@@ -367,6 +368,9 @@ void j616s_standalone_report(u64 lower, u64 upper)
             if (c >= 0) fdt_setprop_u32(dt, c, "m4,board-dtb-max", M4_BOARD_DTB_MAX);
             fdt_pack(dt);
         }
+        /* rev 13: the PMP firmware's ADT properties for the kernel's PMP node, if it has one;
+         * all or nothing, never status (pmp-publish.h) */
+        (void)m4_pmp_publish(dt, capacity, (size_t)(limit - dt_address));
         if (demote_why && !fdt_open_into(dt, dt, (int)capacity)) {
             int c = fdt_path_offset(dt, "/chosen");
             char detail[24];
