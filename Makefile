@@ -246,7 +246,7 @@ OBJECTS := \
 	$(DCP_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) \
 	standalone/loader-cache.o standalone/loader-cache-asm.o standalone/loader-speed.o \
-	standalone/cpu-idle-regs.o standalone/pmp-publish.o
+	standalone/cpu-idle-regs.o standalone/pmp-publish.o standalone/aop-dapf.o
 
 FP_OBJECTS := \
 	kboot_gpu.o \

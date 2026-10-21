@@ -35,12 +35,12 @@ int m4_bt_boot_admit_current(const void *fdt, size_t bytes,
     int node = fdt_path_offset(fdt, "/pcie@1cb0000000"), length;
     if (node < 0 || fdt_node_check_compatible(fdt, 0, "apple,j616s")) return -12;
     const fdt32_t *reg = fdt_getprop(fdt, node, "reg", &length);
-    if (!reg || length != 64 ||
+    if (!reg || length < 64 || length % 16 || /* rev 14: more reg entries (port 1) are fine */
         (((uint64_t)fdt32_to_cpu(reg[0]) << 32) | fdt32_to_cpu(reg[1])) != ecam ||
         (((uint64_t)fdt32_to_cpu(reg[2]) << 32) | fdt32_to_cpu(reg[3])) != 0x1000000)
         return -12;
     const fdt32_t *buses = fdt_getprop(fdt, node, "bus-range", &length);
-    if (!buses || length != 8 || fdt32_to_cpu(buses[0]) || fdt32_to_cpu(buses[1]) != 1)
+    if (!buses || length != 8 || fdt32_to_cpu(buses[0]) || fdt32_to_cpu(buses[1]) < 1) /* rev 14: <0 n>, n >= 1 */
         return -12;
     /* The accepted FDT exposes a 16 MiB subset of the 256 MiB ADT ECAM. */
     return m4_bt_boot_admit(ecam, 0x1000000, read, opaque, report);

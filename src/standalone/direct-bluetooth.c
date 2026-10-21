@@ -14,6 +14,7 @@
 static volatile u64 bt_admission_address;
 static struct m4_bt_boot_report bt_admission_report;
 static int bt_admission_result = -100;
+static int bt_state = -1, bt_faulted; /* rev 14: for /chosen/m4,bt-admission */
 static void *tree;
 struct bt_control_state {u64 values[12];};
 static struct bt_control_state bt_control_state(void) {
@@ -51,5 +52,29 @@ int m4_direct_bluetooth_fdt(void *selected, void *workspace, size_t capacity)
         if(bt_admission_result==M4_BT_BOOT_DEFERRED)state=M4_BT_STATE_DEFERRED; /* bus 0 before Linux enumerates: the graph is kept */
         else if(!bt_admission_result)state=M4_BT_STATE_ADMITTED;
     }
+    bt_state=state; bt_faulted=guarded||bt_guard.status;
     return m4_fixup_wireless(tree,capacity,state) ? 14 : 0;
+}
+
+/* rev 14: why Bluetooth was admitted or refused, as a /chosen string (claude-loader-linux-build-request.md addendum). */
+int m4_direct_bluetooth_publish(void *dt, size_t capacity)
+{
+    static const char tags[] = "fdt-pcie-shape\0adt-identity\0input\0";  /* -12, -11, -10 */
+    static const char cfg[] = "\0\0ecam\0config-read\0root-port\0endpoint-ids\0bt-command\0bt-capability\0bt-status\0changed\0";
+    char text[64];
+    const char *why = "";
+    if (bt_state < 0) snprintf(text, sizeof(text), "not-run");
+    else if (bt_state == M4_BT_STATE_ADMITTED) snprintf(text, sizeof(text), "admitted");
+    else if (bt_state == M4_BT_STATE_DEFERRED) snprintf(text, sizeof(text), "deferred");
+    else if (bt_faulted) snprintf(text, sizeof(text), "refused: fault");
+    else {
+        int rc = bt_admission_result;
+        if (rc <= -10 && rc >= -12) { why = tags; for (int i = -12; i < rc; i++) why += strlen(why) + 1; }
+        else if (rc <= -1 && rc >= -9) { why = cfg; for (int i = 0; i < -rc; i++) why += strlen(why) + 1; }
+        snprintf(text, sizeof(text), "refused %d: %s", rc, why);
+    }
+    if (fdt_open_into(dt, dt, (int)capacity)) return -1;
+    int c = fdt_path_offset(dt, "/chosen"), ret = c < 0 ? c : fdt_setprop_string(dt, c, "m4,bt-admission", text);
+    fdt_pack(dt);
+    return ret;
 }

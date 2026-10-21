@@ -27,6 +27,7 @@
 #include "level1-glue.h"
 #include "fixups.h"
 #include "pmp-publish.h"
+#include "aop-dapf.h"
 
 extern char _base[], _end[], _rodata_end[];
 extern u8 m4_kernel[], m4_kernel_end[], m4_initrd[], m4_initrd_end[], m4_template[];
@@ -166,6 +167,7 @@ static int prepare(void)
         m4_metadata(&memory, &handoff, lower_bound, upper_bound)) return 3;
     m4_boot_profile_mark(M4_PROFILE_ADT_METADATA_READY);
     m4_media_probe_gates(); /* ADT-only media gates while the ADT is cached (R36: 0.1 s uncached) */
+    (void)m4_aop_dapf_collect(); /* rev 14: the AOP DART's DAPF table, ADT only */
     /* MCC, primary init_cpu and its register capture keep the uncached contract. */
     m4_cache_leave();
     if (m4_mcc(scratch, 1600, 0x60416041, 0, 0) != 0x4d4343 || m4_validate_tz(scratch)) return 4;
@@ -238,6 +240,9 @@ static int prepare(void)
     m4_boot_profile_mark(M4_PROFILE_WATCHDOG_READY);
     /* Accepted returning desktop initializers; no resident execution service. */
     if (m4_dapf(scratch,512,0x616444415046UL,0,0) != 0x44415046) return 15;
+    /* rev 14: the AOP DART's DAPF, AOP stopped, read back; a refusal changes nothing, is recorded in /chosen and the
+     * kernel keeps its own path */
+    (void)m4_aop_dapf_program();
     m4_boot_profile_mark(M4_PROFILE_DAPF_READY);
     memcpy((void *)pcie_base,m4_pcie,m4_pcie_end-m4_pcie);
     __asm__ volatile("dsb sy;ic iallu;dsb sy;isb":::"memory");
@@ -385,6 +390,10 @@ void j616s_standalone_report(u64 lower, u64 upper)
         }
         int published = m4_display_handoff_publish(dt, capacity, dt == tree ? NULL : work, capacity,
                                                    reference_guard, &reference);
+        /* rev 14: /chosen m4,dapf-programmed (or m4,dapf-aop-refused) and m4,bt-admission, after the media fix-ups
+         * that may remove the AOP's nodes; before the size check below */
+        (void)m4_aop_dapf_publish(dt, capacity);
+        (void)m4_direct_bluetooth_publish(dt, capacity);
         /* Every record below is an atomic edit of dt; one copy follows them. */
         if (!published && (fdt_check_full(dt, capacity) || !fdt_totalsize(dt) ||
                            dt_address + fdt_totalsize(dt) > limit)) published = -1001;
@@ -399,6 +408,9 @@ void j616s_standalone_report(u64 lower, u64 upper)
         j616s_screen_flush();
         /* Outside the guard: its VBAR/DAIF/recovery frame has been restored. */
         m4_boot_profile_mark(M4_PROFILE_BEFORE_PROFILE_PUBLISH);
+        /* rev 14: the boot-timing record again (Linux asked for phase times); a refusal leaves dt as it was */
+        m4_boot_ticks[M4_BOOT_BEFORE_HANDOFF_PUBLISH] = m4_boot_counter();
+        (void)m4_boot_timing_publish(dt, work, capacity, mrs(CNTFRQ_EL0), mrs(MPIDR_EL1));
         u64 bytes = fdt_totalsize(dt);
         if (!fdt_check_full(dt, capacity) && bytes && bytes <= capacity && dt_address + bytes <= limit) {
             m4_ram_copy((void *)dt_address, dt, bytes);

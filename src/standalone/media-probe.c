@@ -458,7 +458,7 @@ static void build_avd(uint32_t aic)
 #define SEG_COVERED 2   /* wholly inside an existing reservation: disabled witness */
 #define SEG_IN_MEMORY 4 /* overlaps a /memory node of the output tree */
 #define SEG_WANTED 8    /* named in the reserve list */
-struct segment { char name[8]; uint64_t phys, size, flags; };
+struct segment { char name[8]; uint64_t phys, size, flags, iova; };
 static struct segment segments[5];
 static unsigned segment_count;
 
@@ -479,6 +479,7 @@ static void collect_segments(void)
         memset(g, 0, sizeof(*g));
         memcpy(g->name, names + pos, l > 8 ? 8 : l);
         memcpy(&g->phys, ranges + 32 * i, 8);
+        memcpy(&g->iova, ranges + 32 * i + 16, 8); /* rev 14: the AOP DART address */
         memcpy(&size, ranges + 32 * i + 24, 4);
         g->size = size;
         if (!strncmp(g->name, "__ETEXT", 8) || !strncmp(g->name, "__OS_LOG", 8)) g->flags = SEG_WANTED;
@@ -843,6 +844,9 @@ int m4_media_fixups(void *tree, size_t capacity)
     int resv = fdt_path_offset(tree, "/reserved-memory");
     if (resv < 0) return resv;
     int used[2] = {0, 0};
+    /* rev 14: iommu-addresses = <&aop iova size>, when the kernel DT gives the AOP node a phandle (never create one) */
+    int aop_node = fdt_path_offset(tree, "/aop@510600000");
+    uint32_t aop_ph = aop_node >= 0 ? fdt_get_phandle(tree, aop_node) : 0;
     for (unsigned s = 0; audio_ok && s < segment_count; s++) {
         struct segment *g = &segments[s];
         if (!(g->flags & SEG_WANTED) || !g->size || g->size > 0x1000000 || g->phys + g->size < g->phys) continue;
@@ -861,6 +865,12 @@ int m4_media_fixups(void *tree, size_t capacity)
         if (cov) disabled(n);
         if (!cov && fdt_getprop(T, n, "status", NULL)) fdt_delprop(T, n, "status");
         if (!E) seterr(fdt_set_name(T, n, name));
+        if (!cov && aop_ph && g->iova >= g->phys - lo) {
+            uint64_t iova = g->iova - (g->phys - lo), size = hi - lo;
+            fdt32_t cells[5] = {cpu_to_fdt32(aop_ph), cpu_to_fdt32(iova >> 32), cpu_to_fdt32(iova),
+                                cpu_to_fdt32(size >> 32), cpu_to_fdt32(size)};
+            if (!E) seterr(fdt_setprop(T, n, "iommu-addresses", cells, sizeof(cells)));
+        }
         used[kind] = 1;
         if (E) return E;
     }
