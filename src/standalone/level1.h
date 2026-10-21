@@ -11,7 +11,10 @@
 
 /* ---- fixed facts (LEVEL1-SPEC.md) ------------------------------------- */
 #define L1_BLOCK 4096u                    /* NVMe LBA = ext4 block = 4 KiB */
-#include "level1-install.h" /* PRIVATE per install: L1_P4_FIRST, L1_P4_END, L1_P4_GUID_BYTES */
+#include "level1-install.h" /* PRIVATE per install: L1_P4_FIRST, L1_P4_END, L1_P4_GUID_BYTES (+ L1_EXTRA_*) */
+#ifndef L1_EXTRA_N
+#define L1_EXTRA_N 0               /* other Linux partitions Linux may write; level1-install.py --extra */
+#endif
 /* Boot ABI v1 (docs: FOR-INTEGRATION.md). Linux writes these; the loader only reads. */
 #define L1_ABI 1u
 #define L1_LOADER_CONF "/boot/m4/loader.conf"
@@ -139,6 +142,7 @@ struct l1_result {
     char cmdline[L1_CMDLINE_MAX + 1];
     char file[16];              /* the file a size/digest/missing refusal is about */
     uint64_t image_bytes, image_memory, initrd_bytes, dtb_bytes;
+    uint32_t extra_ok;          /* bit x: L1_EXTRA x was found in the GPT with its exact range and PARTUUID */
 };
 /* Runs the whole policy: GPT, ext4 (clean), boot-pending, loader.conf, entry.conf, load + verify of Image,
  * initramfs.img and board.dtb. On L1_OK they are at image_dst/initrd_dst/dtb_dst. Never writes the device. */
@@ -149,7 +153,7 @@ int l1_run_fs(struct l1_load *, struct l1_ext4 *, struct l1_result *);
 const char *l1_reason(enum l1_status, int detail);
 
 /* GPT: finds p4; returns 0 or L1_GPT. */
-int l1_gpt_find_p4(struct l1_dev *, uint8_t *buf8k, int *why);
+int l1_gpt_find_p4(struct l1_dev *, uint8_t *buf8k, int *why, uint32_t *extra_ok);
 
 /* Image header check shared with the loader. Returns 0 or non-zero reason. */
 int l1_image_header_ok(const uint8_t *hdr64, uint64_t file_bytes, uint64_t window, uint64_t *image_memory);

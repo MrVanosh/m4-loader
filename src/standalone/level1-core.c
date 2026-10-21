@@ -65,6 +65,10 @@ int l1_dev_read(struct l1_dev *d, uint64_t lba, uint32_t n, void *dst)
 
 /* PARTUUID of the pinned partition (level1-install.h), GPT mixed-endian bytes. */
 static const uint8_t P4_GUID[16] = L1_P4_GUID_BYTES;
+#if L1_EXTRA_N
+static const uint64_t EXTRA_RANGE[L1_EXTRA_N][2] = L1_EXTRA_RANGES;   /* [first, end) in 4 KiB units */
+static const uint8_t EXTRA_GUID[L1_EXTRA_N][16] = L1_EXTRA_GUIDS;
+#endif
 /* ebd0a0a2-b9e5-4433-87c0-68b6b72699c7 (basic data), 0fc63daf-8483-4772-8e79-3d69d8477de4 (Linux fs) */
 static const uint8_t TYPE_BASIC[16] = {0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44,
                                        0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7};
@@ -86,12 +90,14 @@ static uint32_t crc_step(uint32_t c, const uint8_t *p, size_t n)
 }
 
 /* why: 1 read, 2 signature, 3 header, 4 crc, 5 entries, 6 not found, 7 range.
- * buf: two 4 KiB pages (header, one block of entries at a time). */
-int l1_gpt_find_p4(struct l1_dev *d, uint8_t *buf, int *why)
+ * buf: two 4 KiB pages (header, one block of entries at a time).
+ * extra_ok: bit x set when the L1_EXTRA x partition is an entry with exactly its range and PARTUUID. */
+int l1_gpt_find_p4(struct l1_dev *d, uint8_t *buf, int *why, uint32_t *extra_ok)
 {
     uint8_t *hdr = buf;
     uint8_t *ent = buf + 4096;
     *why = 0;
+    *extra_ok = 0;
     if (l1_dev_read(d, 1, 1, hdr)) { *why = 1; return L1_GPT; }
     static const char sig[8] = {'E', 'F', 'I', ' ', 'P', 'A', 'R', 'T'};
     for (unsigned i = 0; i < 8; i++) if (hdr[i] != (uint8_t)sig[i]) { *why = 2; return L1_GPT; }
@@ -120,6 +126,12 @@ int l1_gpt_find_p4(struct l1_dev *d, uint8_t *buf, int *why)
             int type = same16(e, TYPE_BASIC) || same16(e, TYPE_LINUX);
             if (guid && !range) conflict = 1;
             else if (range && (guid || type)) found = 1;
+#if L1_EXTRA_N
+            for (unsigned x = 0; x < L1_EXTRA_N; x++)
+                if (same16(e + 16, EXTRA_GUID[x]) && le64(e + 32) == EXTRA_RANGE[x][0] &&
+                    le64(e + 40) == EXTRA_RANGE[x][1] - 1)
+                    *extra_ok |= 1u << x;
+#endif
         }
     }
     if (~c != ecrc) { *why = 4; return L1_GPT; }
@@ -312,7 +324,7 @@ int l1_run(struct l1_load *L, struct l1_result *R)
     struct l1_ext4 fs;
     int why;
     step(L, "gpt", 0);
-    if (l1_gpt_find_p4(L->dev, L->meta, &why)) { R->status = L1_GPT; R->detail = why; return R->status; }
+    if (l1_gpt_find_p4(L->dev, L->meta, &why, &R->extra_ok)) { R->status = L1_GPT; R->detail = why; return R->status; }
     step(L, "ext4", 0);
     if (l1_ext4_mount(&fs, L->dev, L1_P4_FIRST, L1_P4_END - L1_P4_FIRST, L->meta)) {   /* a dirty file system is refused here */
         R->status = L1_EXT4; R->detail = fs.detail; return R->status;

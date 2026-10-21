@@ -748,6 +748,25 @@ int l1_publish(const struct l1_host *h, void *state, void *dt, size_t capacity)
     rc |= set_str(h, dt, c, "m4,boot-entry", r && r->ssd ? r->res.entry : "rescue");
     rc |= set_str(h, dt, c, "m4,boot-reason", reason_of(r));
     if (detail[0]) rc |= set_str(h, dt, c, "m4,boot-detail", detail);
+    /* The partitions this boot checked against the GPT (exact range and PARTUUID): Linux's NVMe write guard takes its
+     * ranges from here (<first_hi first_lo end_hi end_lo> per partition, 4 KiB units, end exclusive), the root first. */
+    if (r && r->ssd) {
+        uint8_t wr[16 * (1 + L1_EXTRA_N)];
+        unsigned n = 0;
+        be32(wr, (uint32_t)(L1_P4_FIRST >> 32)); be32(wr + 4, (uint32_t)L1_P4_FIRST);
+        be32(wr + 8, (uint32_t)(L1_P4_END >> 32)); be32(wr + 12, (uint32_t)L1_P4_END);
+        n = 16;
+#if L1_EXTRA_N
+        static const uint64_t extra[L1_EXTRA_N][2] = L1_EXTRA_RANGES;
+        for (unsigned x = 0; x < L1_EXTRA_N; x++) {
+            if (!(r->res.extra_ok & (1u << x))) continue;
+            be32(wr + n, (uint32_t)(extra[x][0] >> 32)); be32(wr + n + 4, (uint32_t)extra[x][0]);
+            be32(wr + n + 8, (uint32_t)(extra[x][1] >> 32)); be32(wr + n + 12, (uint32_t)extra[x][1]);
+            n += 16;
+        }
+#endif
+        rc |= h->fdt_setprop(dt, c, "m4,write-lba-range", wr, (int)n);
+    }
     if (r && r->ans.st.left && r->ans.live_n) {
         rc |= h->fdt_setprop(dt, c, "m4,ans-live", r->ans.live_eps, r->ans.live_n);
         /* the syslog buffer the firmware keeps writing to: <iova_hi iova_lo size n_entries msg_size>, only when it asked for

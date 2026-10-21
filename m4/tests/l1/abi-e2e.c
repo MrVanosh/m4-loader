@@ -221,6 +221,16 @@ static void build_gpt(void)
         if (part[i].p4) memcpy(x + 16, p4guid, 16); else x[16] = (uint8_t)(0x40 + i);
         put64(x + 32, part[i].f); put64(x + 40, part[i].l);
     }
+#if L1_EXTRA_N
+    /* the install's extra Linux partitions, with their own PARTUUIDs and ranges (published only when found like this) */
+    static const uint64_t xr[L1_EXTRA_N][2] = L1_EXTRA_RANGES;
+    static const uint8_t xg[L1_EXTRA_N][16] = L1_EXTRA_GUIDS;
+    for (int i = 0; i < L1_EXTRA_N; i++) {
+        uint8_t *x = e + (5 + i) * 128;
+        memcpy(x, basic, 16); memcpy(x + 16, xg[i], 16);
+        put64(x + 32, xr[i][0]); put64(x + 40, xr[i][1] - 1);
+    }
+#endif
     uint8_t *h = gptbuf + 4096;
     memcpy(h, "EFI PART", 8);
     put32(h + 8, 0x00010000); put32(h + 12, 92); put64(h + 24, 1); put64(h + 32, 244276264);
@@ -254,8 +264,8 @@ struct run {
     int publish_rc;
     char source[24], entry[80], reason[64], detail[96], version[32];
     uint32_t abi;
-    int has_abi, has_live, live_n, has_syslog;
-    uint8_t live[32];
+    int has_abi, has_live, live_n, has_syslog, wr_n;
+    uint8_t live[32], wr[64];
 };
 static int get_str(const void *dt, int c, const char *k, char *out, size_t cap)
 {
@@ -312,7 +322,10 @@ static void do_run(struct run *R, int capable, int cache_live, int abort_at)
     if (p && n > 0 && n <= (int)sizeof(R->live)) { R->has_live = 1; R->live_n = n; memcpy(R->live, p, (size_t)n); }
     p = fdt_getprop(dtbuf, c, "m4,ans-syslog", &n);
     if (p && n == 20) R->has_syslog = 1;
+    p = fdt_getprop(dtbuf, c, "m4,write-lba-range", &n);
+    if (p && n > 0 && n <= (int)sizeof(R->wr)) { R->wr_n = n; memcpy(R->wr, p, (size_t)n); }
 }
+static uint64_t wr_at(const struct run *R, int i) { uint64_t v; memcpy(&v, R->wr + 8 * i, 8); return __builtin_bswap64(v); }
 static void check(const char *name, int ok, const char *extra)
 {
     total++;
@@ -355,7 +368,8 @@ static void rescue_case(const char *name, const char *fs, const char *reason, co
     snprintf(extra, sizeof(extra), "source=%s entry=%s reason=%s detail='%s' ssd=%u", R.source, R.entry, R.reason, R.detail, R.a.ssd);
     int ok = !R.a.ssd && !strcmp(R.source, "rescue") && !strcmp(R.entry, "rescue") && !strcmp(R.reason, reason) &&
              (!detail_prefix || !strncmp(R.detail, detail_prefix, strlen(detail_prefix))) &&
-             R.publish_rc == 0 && R.has_abi && R.abi == 1 && !strcmp(R.version, "rev11-test") && handoff_clean(why, sizeof(why));
+             R.publish_rc == 0 && R.has_abi && R.abi == 1 && !strcmp(R.version, "rev11-test") && handoff_clean(why, sizeof(why)) &&
+             !R.wr_n;   /* the rescue set gets no write ranges from the loader */
     check(name, ok, extra);
 }
 
@@ -405,6 +419,15 @@ int main(int argc, char **argv)
                                      "m4,level1-ms", "m4,level1-entry", "m4,payload-image", "m4,payload-initrd", "m4,level1-capable"};
         for (unsigned i = 0; i < sizeof(gone) / sizeof(*gone); i++) if (fdt_getprop(dtbuf, c, gone[i], NULL)) bad = 1;
         check("A5 retired properties are absent", !bad, "");
+    }
+    {   /* the root first, then every extra partition the GPT holds with its exact range and PARTUUID */
+        int ok = R.wr_n == 16 * (1 + L1_EXTRA_N) && wr_at(&R, 0) == L1_P4_FIRST && wr_at(&R, 1) == L1_P4_END;
+#if L1_EXTRA_N
+        static const uint64_t xr[L1_EXTRA_N][2] = L1_EXTRA_RANGES;
+        for (int i = 0; i < L1_EXTRA_N; i++) ok &= wr_at(&R, 2 + 2 * i) == xr[i][0] && wr_at(&R, 3 + 2 * i) == xr[i][1];
+#endif
+        snprintf(extra, sizeof(extra), "%d bytes, %d extra", R.wr_n, L1_EXTRA_N);
+        check("A7 /chosen m4,write-lba-range: the GPT-checked root and extra partitions", ok, extra);
     }
     {   /* sizes that are not a multiple of 4 KiB / 16 KiB: nothing is written past the true length (the kernel gets the true initrd-end) */
         const uint8_t *i_end = (const uint8_t *)(uintptr_t)R.a.initrd + R.a.initrd_bytes;
