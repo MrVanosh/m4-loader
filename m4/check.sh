@@ -11,6 +11,8 @@
 #   decision  loader-decision (the production policy on an ext4 image): 28 fixtures + 3 board.dtb-window fixtures, --window-dtb
 #   harness   the real DT fix-up chain on the real ADT (rev12-harness): 8 scenarios + the /chosen m4,board-dtb-max edit
 #   pmp       rev 13 m4_pmp_publish() on the real ADT and a final tree (pmp-test)
+#   rev14     rev 14: aop-dapf.c on fake MMIO and the real ADT, the AOP segment iommu-addresses, the Bluetooth admission fix
+#             (the m4.13 two-port PCIe node), the /chosen records m4,dapf-*, m4,bt-admission, m4,boot-timing-v1
 #   audit     the per-unit checks of m4/tools (audit-tree.py on the checkout, gates-unit.py check, usb-contract-id.py) against the ADT;
 #             skipped if those tools are not in the repo. Not in the default run when PRIVATE is unset.
 #
@@ -18,10 +20,10 @@
 #   INPUTS     dir with Image, board.dtb, rescue-initramfs.img, rescue-cmdline.txt, pcie.bin, librust.a   (required)
 #   PRIVATE    the kit's private/ dir: private-gates-unit.h and private-level1-install.h (build), private-adt.bin and private-adt-ref.bin
 #              (this Mac's Apple device tree: per unit, never in git; qemu, e2e, harness, pmp) and optionally
-#              private-reference-rev13.txt (hashes of the harness output trees)
+#              private-reference-revNN.txt (hashes of the harness output trees; revNN as in REFERENCE)
 #   SRC        the source checkout (default: the repo this script lives in)
 #   VERSION    loader version stamp (default: the reference file's `version`)
-#   REFERENCE  reference file (default m4/reference/reference-rev13.txt)
+#   REFERENCE  reference file (default m4/reference/reference-rev14.txt; rev13 for a rev 13 tree)
 #   WORK       scratch directory (default: a new mktemp dir; logs in $WORK/logs, observed values in $WORK/obs)
 #   QEMU       qemu-system-aarch64 binary (default: from PATH)
 #   ROOT_UUID  only if rescue-cmdline.txt has the @ROOT_UUID@ placeholder
@@ -34,7 +36,7 @@
 set -u
 . "$(dirname "$0")/env.sh"
 SRC=${SRC:-$M4_ROOT}; INPUTS=${INPUTS:-}; PRIVATE=${PRIVATE:-}
-REFERENCE=${REFERENCE:-$M4_HERE/reference/reference-rev13.txt}
+REFERENCE=${REFERENCE:-$M4_HERE/reference/reference-rev14.txt}
 [ -f "$REFERENCE" ] || { echo "no reference file: $REFERENCE" >&2; exit 2; }
 ref() { awk -v k="$1" '$1 == k { sub(/^[^ ]+ +/, ""); print; exit }' "$REFERENCE"; }
 VERSION=${VERSION:-$(ref version)}
@@ -278,10 +280,11 @@ step_harness() {
   local ct; ct=$("$WORK/chosen-test" "$WORK/h/board.dtb" "$WORK/h/chosen.dtb"); echo "chosen-test: $ct"
   obs harness.chosen-test "$(echo "$ct" | sed 's/ /_/g')"
   # private hashes, when the private reference is at hand
-  if [ -f "$PRIVATE/private-reference-rev13.txt" ]; then
-    if diff <(LC_ALL=C sort "$WORK/obs/private-harness.txt") <(grep -v '^#' "$PRIVATE/private-reference-rev13.txt" | LC_ALL=C sort) > "$WORK/private-harness.diff"; then echo "output trees: identical to the private reference"
+  local privref=$PRIVATE/private-$(basename "$REFERENCE")
+  if [ -f "$privref" ]; then
+    if diff <(LC_ALL=C sort "$WORK/obs/private-harness.txt") <(grep -v '^#' "$privref" | LC_ALL=C sort) > "$WORK/private-harness.diff"; then echo "output trees: identical to the private reference"
     else echo "output trees differ from the private reference:"; cat "$WORK/private-harness.diff"; bad=1; fi
-  else echo "note: no $PRIVATE/private-reference-rev13.txt: output-tree hashes not compared"; fi
+  else echo "note: no $privref: output-tree hashes not compared"; fi
   [ $bad = 0 ]
   echo "SUMMARY $(scenarios | wc -l | tr -d ' ') scenarios + chosen-test"
 }
@@ -305,22 +308,33 @@ step_pmp() {
   echo "SUMMARY pmp-test PASS, $(grep -c '' "$WORK/pmp/pmp-test.out") lines"
 }
 
-# ---- 8. the per-unit audit tools (m4/tools, HA) ---------------------------------------------------------------
+# ---- 8. rev 14: AOP DAPF, AOP segment IOVAs, Bluetooth admission, /chosen records ------------------------------
+step_rev14() {
+  need_built; need_private; need dtc fdtput; local T=$M4_HERE/tests
+  if [ ! -f "$TREE/src/standalone/aop-dapf.c" ]; then echo "no aop-dapf.c in this tree (before rev 14)"; return 77; fi
+  [ -x "$WORK/h/harness" ] || { mkdir -p "$WORK/h"; bash $T/dt/build-harness.sh "$TREE" "$WORK/h/harness" "$BOARD" "$WORK/h"; }
+  mkdir -p "$WORK/rev14"
+  bash $T/rev14/run-rev14-test.sh "$TREE" "$ADTREF" "$BOARD" "$WORK/h/harness" "$WORK/rev14" | tee "$WORK/rev14/run.out"
+  sed -n 's/^obs //p' "$WORK/rev14/run.out" >> "$OBS"
+  echo "SUMMARY dapf $(sed -n 's/^obs rev14.dapf-test //p' "$WORK/rev14/run.out"), timing $(sed -n 's/^obs rev14.timing-test //p' "$WORK/rev14/run.out"), port-1 admit $(sed -n 's/^obs rev14.t-port1.bt-admit //p' "$WORK/rev14/run.out")"
+}
+
+# ---- 9. the per-unit audit tools (m4/tools, HA) ---------------------------------------------------------------
 step_audit() {
   need_built; need_private; local T=$M4_HERE/tools
   [ -f "$T/audit-tree.py" ] && [ -f "$T/gates-unit.py" ] && [ -f "$T/usb-contract-id.py" ] || { echo "m4/tools has no audit tools in this checkout"; return 77; }
-  local n; n=$(python3 -I "$T/audit-tree.py" "$SRC" --adt "$ADT" 2>&1 | tee "$WORK/audit-tree.out" | sed -n 's/^audit-tree: \([0-9]*\) finding.*/\1/p'); obs audit.tree.findings "${n:-0}"
+  local n; n=$(python3 -I "$T/audit-tree.py" "$SRC" --adt "$ADT" --install "$PRIVATE/private-level1-install.h" 2>&1 | tee "$WORK/audit-tree.out" | sed -n 's/^audit-tree: \([0-9]*\) finding.*/\1/p'); obs audit.tree.findings "${n:-0}"
   obs audit.gates "$(python3 -I "$T/gates-unit.py" check "$ADT" "$TREE/src/standalone/gates.h" "$TREE/src/standalone/gates-unit.h" 2>&1 | tee "$WORK/gates-unit.out" | tail -1 | sed 's/ /_/g')"
   obs audit.usb-contract "$(python3 -I "$T/usb-contract-id.py" "$ADT" "$TREE/src/standalone/usb-contract-id.h" 2>&1 | tail -1 | sed 's/ /_/g')"
   echo "SUMMARY tree findings ${n:-0}; $(tail -1 "$WORK/gates-unit.out")"
 }
 
-if [ "${1:-}" = --list ]; then sed -n 's/^#   \([a-z]*\) .*/\1/p' "$0" | head -8; exit 0; fi
+if [ "${1:-}" = --list ]; then sed -n 's/^#   \([a-z0-9]*\) .*/\1/p' "$0" | head -9; exit 0; fi
 WANT=${*:-all}
 echo "m4 loader check: SRC=$SRC VERSION=$VERSION WORK=$WORK"
-for s in build objects qemu e2e decision harness pmp audit; do step $s; done
+for s in build objects qemu e2e decision harness pmp rev14 audit; do step $s; done
 { echo "# observed by m4/check.sh ($(date -u +%Y-%m-%dT%H:%MZ)); copy to m4/reference/ to make it the reference of a new revision"; echo "version $VERSION"
-  cat "$WORK"/obs/{build,objects,qemu,e2e,decision,harness,pmp,audit}.txt 2>/dev/null; [ -f "$WORK/objects.txt" ] && sed 's/^\([0-9a-f]*\)  \(.*\)$/object \1 \2/' "$WORK/objects.txt"; } > "$WORK/observed.txt"
+  cat "$WORK"/obs/{build,objects,qemu,e2e,decision,harness,pmp,rev14,audit}.txt 2>/dev/null; [ -f "$WORK/objects.txt" ] && sed 's/^\([0-9a-f]*\)  \(.*\)$/object \1 \2/' "$WORK/objects.txt"; } > "$WORK/observed.txt"
 echo "----"
 if [ $FAILS -gt 0 ]; then echo "CHECK FAILED: $PASSES passed, $FAILS failed, $SKIPS skipped (logs: $WORK/logs)"; exit 1
 elif [ $SKIPS -gt 0 ]; then echo "CHECK PASSED with $SKIPS skipped: $PASSES passed (logs: $WORK/logs)"; exit 0
