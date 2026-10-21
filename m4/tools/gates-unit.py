@@ -8,10 +8,16 @@ keyboard language), so they are not in git: gates.h includes "gates-unit.h", whi
 
   python3 -I m4/tools/gates-unit.py make  ADT.bin  src/standalone/gates-unit.h
   python3 -I m4/tools/gates-unit.py check ADT.bin  src/standalone/gates.h src/standalone/gates-unit.h
+  python3 -I m4/tools/gates-unit.py regen ADT.bin  src/standalone/gates.h NEW-gates.h
 
 `check` verifies that every record of gates.h plus gates-unit.h equals the ADT property (path, key, bytes). It is the
 firmware-update check: after a macOS/iBoot update, rebuild the ADT file and run it; any record it names will make the
 loader stop ("R21-direct STOP: guard=3") on that Mac. Output never prints values, only paths, keys and lengths.
+
+`regen` stands in for the lost generator (tools/prepare-m4-standalone-gates.py): it rewrites every record of gates.h
+(not the per-unit four) with the bytes of the same path and key in ADT.bin, for another J616s or another firmware, and
+lists the records it changed. Use an ADT the loader saw: an ioreg-derived one renders 9 records differently on this Mac
+(5 AAPL,unit-string, 4 PCIe bridge cell counts), and a loader built from those values would stop.
 """
 import re, struct, sys
 
@@ -86,6 +92,25 @@ def main():
                 print('MISMATCH gate_%d %s %s (adt %s B, gate %s B)' % (i, p, k, None if v is None else len(v), n))
         print('%d gate records, %d mismatch' % (len(tbl), bad))
         sys.exit(1 if bad else 0)
+    elif mode == 'regen':
+        text = open(sys.argv[3]).read()
+        arr, changed, missing = lines(text), 0, 0
+        for p, k, i, n in table(text):
+            if (p, k) in UNIT:
+                continue
+            v = adt.get(p, {}).get(k)
+            if v is None:
+                missing += 1
+                print('kept    gate_%d %s %s: not in this ADT (an ioreg dump lacks AAPL,unit-string; use a native ADT)' % (i, p, k))
+                continue
+            new = c_array(i, v)
+            if new != arr[i] or len(v) != n:
+                changed += 1
+                print('changed gate_%d %s %s (%d -> %d B)' % (i, p, k, n, len(v)))
+            text = text.replace(arr[i], new).replace('{"%s","%s",gate_%d,%d}' % (p, k, i, n), '{"%s","%s",gate_%d,%d}' % (p, k, i, len(v)))
+        open(sys.argv[4], 'w').write(text)
+        print('wrote %s: %d records changed, %d kept (missing)' % (sys.argv[4], changed, missing))
+        sys.exit(1 if missing else 0)
 
 
 main()
