@@ -1,0 +1,25 @@
+How the pieces that are not plain C files come to be (checked 2026-10-21; full table: the kit's inputs.md)
+
+level1.bin   BUILT from this tree: `make build/level1.bin` compiles src/standalone/level1-{sha256,ext4,core,ans,blob,libc}.c
+             and level1-header.S with the L1_FLAGS of the Makefile, links them with src/standalone/level1.ld at address 0
+             (`ld -T level1.ld -static -nostdlib`), `objcopy -O binary`. The Makefile first fails if any object has an
+             absolute data relocation (the blob is never relocated). level1-embed.S then .incbin's it into the loader's .l1blob
+             section. 26,196 B in rev 11, 12 and 13, byte for byte. Per-install input: level1-install.h (see below).
+
+pcie.bin     NOT rebuildable from this tree: an opaque 43,936 B AArch64 program (sha256 f7a338c7679a4fdb...39132ed32) that
+             the loader copies to 0x10200000000 and calls as pcie(scratch, 16384, adt, devtree_size, "PCIEINIT"). It
+             contains m1n1's src/pcie.c pcie_init (string for string) plus a wrapper whose source was not kept. Carry it
+             as an input, unchanged. Its first appearance is in the 2026-09-29 source handoff; the retained scripted
+             ancestor is the 2026-09-27 build-pcie-original.py (a different build, linked at 0x42000000).
+
+librust.a    BUILT: `make build/librust.a BUILDSTD=1` (cargo build -Z build-std=alloc,core --target
+             aarch64-unknown-none-softfloat --lib --release, RUSTC_BOOTSTRAP=1; rustc 1.98.1 Fedora, needs the rust-src
+             package, no network, 10 s) gives 1,541,254 B, sha256 1613da865218def7..., identical to the prebuilt file used
+             for rev 12 and 13. build/librust.a is the only file of build/ the build driver keeps.
+
+inputs/      Image, board.dtb, rescue-initramfs.img, rescue-cmdline.txt come from the Linux side (linux-m4-rescue package,
+             `m4-boot rescue`); rescue-cmdline.txt.template here has the root UUID as @ROOT_UUID@.
+
+Per-unit / per-install build inputs (never in git; copy next to the sources before building):
+  src/standalone/gates-unit.h      python3 -I m4/tools/gates-unit.py make  ADT.bin src/standalone/gates-unit.h src/standalone/gates.h
+  src/standalone/level1-install.h  python3 -I m4/tools/level1-install.py --disk /dev/nvme0n1 --partuuid <PARTUUID> src/standalone/level1-install.h
