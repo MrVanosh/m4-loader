@@ -23,7 +23,7 @@
 #              private-reference-revNN.txt (hashes of the harness output trees; revNN as in REFERENCE)
 #   SRC        the source checkout (default: the repo this script lives in)
 #   VERSION    loader version stamp (default: the reference file's `version`)
-#   REFERENCE  reference file (default m4/reference/reference-rev16.txt; rev15/rev14/rev13 for those trees)
+#   REFERENCE  reference file (default m4/reference/reference-rev17.txt; rev16/rev15/rev14/rev13 for those trees)
 #   WORK       scratch directory (default: a new mktemp dir; logs in $WORK/logs, observed values in $WORK/obs)
 #   QEMU       qemu-system-aarch64 binary (default: from PATH)
 #   ROOT_UUID  only if rescue-cmdline.txt has the @ROOT_UUID@ placeholder
@@ -36,7 +36,7 @@
 set -u
 . "$(dirname "$0")/env.sh"
 SRC=${SRC:-$M4_ROOT}; INPUTS=${INPUTS:-}; PRIVATE=${PRIVATE:-}
-REFERENCE=${REFERENCE:-$M4_HERE/reference/reference-rev16.txt}
+REFERENCE=${REFERENCE:-$M4_HERE/reference/reference-rev17.txt}
 [ -f "$REFERENCE" ] || { echo "no reference file: $REFERENCE" >&2; exit 2; }
 ref() { awk -v k="$1" '$1 == k { sub(/^[^ ]+ +/, ""); print; exit }' "$REFERENCE"; }
 VERSION=${VERSION:-$(ref version)}
