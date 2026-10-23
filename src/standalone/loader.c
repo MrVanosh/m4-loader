@@ -28,6 +28,7 @@
 #include "fixups.h"
 #include "pmp-publish.h"
 #include "aop-dapf.h"
+#include "chainload.h"
 
 extern char _base[], _end[], _rodata_end[];
 extern u8 m4_kernel[], m4_kernel_end[], m4_initrd[], m4_initrd_end[], m4_template[];
@@ -149,6 +150,21 @@ static int payload_check(size_t image_bytes)
     return payload_compare(image_bytes) ? -1 : 0;
 }
 
+/* rev 17: an m1n1 entry (type=m1n1, m1n1.bin at `image`). Level 1 ran before DAPF, the AOP DAPF and the PCIe callback
+ * and handed ANS back running without our SART entries; no secondary CPU was started and the MMU is off: the machine is
+ * as m1n1's own stage 1 hands it to stage 2 (MCC set up, watchdog off). m1n1's chainload_image() copies m1n1, the SEPFW and
+ * iBoot's boot arguments and installs its stub; the stub moves m1n1 to our base and enters it. Returns only on failure. */
+static int chain_m1n1(u64 image, u64 bytes)
+{
+    j616s_screen_printf("rev17: m1n1 entry, %lu B: chainloading\n", bytes);
+    j616s_screen_flush();
+    if (chainload_image((void *)image, (size_t)bytes, NULL, 0) || !next_stage.entry) return 31;
+    m4_cache_scrub();
+    __asm__ volatile("msr daifset, #0xf\n\tdsb sy\n\tisb" ::: "memory");
+    next_stage.entry(next_stage.args[0], next_stage.args[1], next_stage.args[2], next_stage.args[3], next_stage.args[4]);
+    return 32;
+}
+
 static int prepare(void)
 {
     m4_boot_ticks[M4_BOOT_PREPARE_START] = m4_boot_counter();
@@ -238,6 +254,25 @@ static int prepare(void)
     /* Existing bounded, read-back-checked disable of the inherited watchdog. */
     if (m4_watchdog(scratch, 64, 0x50836c000UL, 0x508330008UL, 0x6163) != 0x574454) return 9;
     m4_boot_profile_mark(M4_PROFILE_WATCHDOG_READY);
+    /* rev 17: the Level 1 attempt runs here, before DAPF, the AOP DAPF and the PCIe callback (it needs none of them: ANS
+     * sits behind its SART), so an m1n1 entry can still get the machine as iBoot left it. Boot ABI v1: the default entry
+     * of /boot/m4/loader.conf, or the one an armed one-shot token names (spent first), if boot-pending is absent and the
+     * file system is clean, else the embedded rescue set. A Linux entry's board.dtb is read into `tree`; the rescue
+     * board.dtb is copied there later. Every fix-up then runs on `tree`. */
+    m4_cache_enter(); /* window: Level 1 attempt */
+    struct m4_l1_view l1 = {0};
+    m4_level1_attempt(handoff.kernel, handoff.initrd - handoff.kernel - 0x10000, handoff.initrd,
+                      (u64)arena + handoff.arena_size - handoff.initrd, m4_template,
+                      (size_t)(m4_template_end - m4_template), tree, M4_BOARD_DTB_MAX, &l1);
+    m4_cache_leave();
+    if (l1.ssd && l1.kind == M4_L1_KIND_M1N1) {
+        /* chain_m1n1 returns only when the hand-over did not happen: boot the embedded rescue set instead (a one-shot
+         * token is already spent, so the next boot is the default entry again) */
+        demote_rc = chain_m1n1(handoff.kernel, l1.image_bytes);
+        demote_why = "m1n1-chainload";
+        j616s_screen_printf("rev17: m1n1 chainload failed (%d): rescue set\n", demote_rc);
+        l1.ssd = 0;
+    }
     /* Accepted returning desktop initializers; no resident execution service. */
     if (m4_dapf(scratch,512,0x616444415046UL,0,0) != 0x44415046) return 15;
     /* rev 14: the AOP DART's DAPF, AOP stopped, read back; a refusal changes nothing, is recorded in /chosen and the
@@ -252,17 +287,10 @@ static int prepare(void)
     u64 pcie_rc=pcie(scratch,16384,(u64)adt,cur_boot_args.devtree_size,0x50434945494e4954UL);
     m4_boot_profile_mark(M4_PROFILE_AFTER_PCIE);
     if (pcie_rc != 0x50434945 || scratch[1] != 2 || scratch[2] || scratch[8]) return 16;
-    m4_cache_enter(); /* window: Level 1 attempt, DT fix-ups and payload copies */
+    m4_cache_enter(); /* window: DT fix-ups and payload copies */
     if (!m4_contains(loader,(struct m4_range){(u64)peripheral_tree,sizeof(peripheral_tree)}) ||
         m4_overlaps(span,(struct m4_range){(u64)peripheral_tree,sizeof(peripheral_tree)})) return 17;
     m4_boot_ticks[M4_BOOT_DEVICES_READY] = m4_boot_counter();
-    /* Boot ABI v1: the default entry of /boot/m4/loader.conf (Image, initramfs.img and board.dtb, size + CRC-32 checked)
-     * if boot-pending is absent and the file system is clean, else the embedded rescue set. The entry's board.dtb is
-     * read into `tree`; the rescue board.dtb is copied there. Every fix-up then runs on `tree`. */
-    struct m4_l1_view l1 = {0};
-    m4_level1_attempt(handoff.kernel, handoff.initrd - handoff.kernel - 0x10000, handoff.initrd,
-                      (u64)arena + handoff.arena_size - handoff.initrd, m4_template,
-                      (size_t)(m4_template_end - m4_template), tree, M4_BOARD_DTB_MAX, &l1);
     const u64 rescue_kernel_memory = header[2];
     const u64 rescue_initrd_bytes = (u64)(m4_initrd_end - m4_initrd);
     size_t image_bytes;

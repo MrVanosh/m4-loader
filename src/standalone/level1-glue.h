@@ -13,6 +13,7 @@
 #define M4_LOADER_VERSION "rev11"
 #endif
 
+#define M4_L1_KIND_M1N1 1u   /* = L1_KIND_M1N1 (level1.h) */
 struct m4_l1_view {
     int ssd;                       /* 1: Image, initramfs.img and board.dtb of the default entry are in place, verified */
     uint64_t image_bytes;          /* Image file bytes */
@@ -20,6 +21,8 @@ struct m4_l1_view {
     uint64_t initrd_bytes;
     uint64_t dtb_bytes;            /* board.dtb bytes, at dtb_dst */
     const char *entry, *cmdline;   /* default= entry name; entry.conf cmdline= (valid while ssd) */
+    unsigned kind;                 /* rev 17: 0 Linux; 1 m1n1 (image_bytes of m1n1.bin at the kernel slot, ANS released) */
+    unsigned oneshot;              /* rev 17: 1 = the one-shot token chose this entry */
 };
 
 /* Runs inside the live cache window, after the PCIe callback and before the payload copy. kernel/initrd are the

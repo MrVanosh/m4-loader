@@ -8,7 +8,7 @@
 #   objects   every object file, stripped of debug info/.comment/.note*, compared byte for byte with the reference list
 #   qemu      the Level 1 guard (EL2 + EL1 flavours) and the shim + blob + guard (2 blob placements) under QEMU at EL2
 #   e2e       the Level 1 blob end to end with the model HAL: this Mac's ADT, a real ext4 image per scenario (37 cases)
-#   decision  loader-decision (the production policy on an ext4 image): 28 fixtures + 3 board.dtb-window fixtures, --window-dtb
+#   decision  loader-decision (the production policy on an ext4 image): 38 fixtures + 3 two-boot one-shot sequences + 3 board.dtb-window fixtures, --window-dtb
 #   harness   the real DT fix-up chain on the real ADT (rev12-harness): 8 scenarios + the /chosen m4,board-dtb-max edit
 #   pmp       rev 13 m4_pmp_publish() on the real ADT and a final tree (pmp-test)
 #   rev14     rev 14: aop-dapf.c on fake MMIO and the real ADT, the AOP segment iommu-addresses, the Bluetooth admission fix
@@ -209,7 +209,27 @@ image-textoff rescue bad-image
 image-window rescue too-large
 bad-dtb rescue bad-dtb
 truncated-dtb rescue bad-dtb
+m1n1-ok entry default
+m1n1-crc rescue digest-mismatch
+m1n1-size rescue size-mismatch
+m1n1-missing rescue missing-file
+m1n1-nosize rescue bad-conf
+entry-badtype rescue bad-conf
+oneshot-spent entry default
+oneshot-small entry default
+oneshot-badentry entry default
+oneshot-pending rescue previous-boot-incomplete
 CASES
+  # rev 17: the one-shot token over two boots (the tool keeps the token write in memory): entry, kind, oneshot per boot
+  local exp got
+  while read -r name exp; do
+    got=$("$WORK/loader-decision" --boots 2 "$FIX/$name.ext4" 2>/dev/null | sed -E 's/.* entry=([^ ]+) .* kind=([a-z0-9]+) oneshot=([0-9]).*/\1,\2,\3/' | paste -sd' ' -)
+    if [ "$got" = "$exp" ]; then pass=$((pass+1)); echo "PASS $name (2 boots) -> $got"; else fail=$((fail+1)); echo "FAIL $name (2 boots): got '$got' want '$exp'"; fi
+  done <<'BOOTS'
+oneshot-linux e2,linux,1 e1,linux,0
+oneshot-m1n1 e2,m1n1,1 e1,linux,0
+oneshot-noentry rescue,linux,1 e1,linux,0
+BOOTS
   obs decision.cases "$pass/$((pass+fail))"
   # the board.dtb window: default 98,304 B (rev 12 and later); --window-dtb 36864 is rev 11's
   local w tag out2

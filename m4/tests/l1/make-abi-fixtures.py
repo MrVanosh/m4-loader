@@ -105,4 +105,52 @@ S['image-window'] = scenario_bad_file('image-window', 'Image', kimage(1024 * 102
 S['image-textoff'] = scenario_bad_file('image-textoff', 'Image', kimage(1024 * 1024, 2 * 1024 * 1024, 7, text_off=0x80000))
 S['bad-dtb'] = scenario_bad_file('bad-dtb', 'board.dtb', bytes(rnd(5000, 8)))
 S['truncated-dtb'] = scenario_bad_file('truncated-dtb', 'board.dtb', DTB[:len(DTB) - 100])
+# ---- rev 17: m1n1 entries and the one-shot token -----------------------------------------------------------------
+M1N1 = bytes(rnd(200 * 1024 + 11, 9))
+def m1n1_conf(size_off=0, crc_val=None, drop=(), typ='m1n1'):
+    L = ['abi=1', 'type=%s' % typ, 'kver=m1n1-test']
+    if 'm1n1.bin_size' not in drop: L.append('m1n1.bin_size=%d' % (len(M1N1) + size_off))
+    if 'm1n1.bin_crc32' not in drop: L.append('m1n1.bin_crc32=%s' % (crc_val if crc_val else crc(M1N1)))
+    return ('\n'.join(L) + '\n').encode()
+def token(state='armed', entry='e2', pad=4096):
+    t = ('m4_oneshot=%s\nentry=%s\n' % (state, entry)).encode()
+    return t.ljust(pad, b'\0') if pad else t
+def scenario_multi(name, entries, loader='abi=1\ndefault=e1\n', oneshot=None, pending=None):
+    """entries: [(entry name, entry.conf bytes, {file name: bytes})]"""
+    fs = out + '/' + name + '.ext4'
+    if os.path.exists(fs): os.unlink(fs)
+    r = subprocess.run([E + 'mke2fs', '-q', '-F', '-t', 'ext4', '-b', '4096', '-I', '256', '-O', FEAT, '-U',
+                        '00000000-0000-4000-8000-00000000e2e0', fs, '2048'], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    tmp = out + '/t.' + name; os.makedirs(tmp, exist_ok=True)
+    k = [0]
+    def put(data):
+        k[0] += 1; p = '%s/f%d' % (tmp, k[0]); open(p, 'wb').write(data); return p
+    cmds = ['mkdir boot', 'cd boot', 'mkdir m4', 'write %s /boot/m4/loader.conf' % put(loader.encode()), 'mkdir /boot/m4/entries']
+    for en, conf, files in entries:
+        cmds += ['mkdir /boot/m4/entries/' + en, 'write %s /boot/m4/entries/%s/entry.conf' % (put(conf), en)]
+        cmds += ['write %s /boot/m4/entries/%s/%s' % (put(d), en, fn) for fn, d in files.items()]
+    if oneshot is not None: cmds.append('write %s /boot/m4/oneshot' % put(oneshot))
+    if pending is not None: cmds.append('write %s /boot/m4/boot-pending' % put(pending))
+    open(tmp + '/cmds', 'w').write('\n'.join(cmds) + '\n')
+    r = subprocess.run([E + 'debugfs', '-w', '-f', tmp + '/cmds', fs], capture_output=True, text=True)
+    shutil.rmtree(tmp)
+    return fs
+LINUX_FILES = {'Image': IMAGE, 'initramfs.img': INITRD, 'board.dtb': DTB}
+E1 = ('e1', entry_conf(GOOD), LINUX_FILES)
+E2L = ('e2', entry_conf(GOOD, kver='6.17.0-m4.2'), LINUX_FILES)
+E2M = ('e2', m1n1_conf(), {'m1n1.bin': M1N1})
+S['m1n1-ok'] = scenario_multi('m1n1-ok', [E2M], loader='abi=1\ndefault=e2\n')
+S['m1n1-crc'] = scenario_multi('m1n1-crc', [('e2', m1n1_conf(crc_val='0badc0de'), {'m1n1.bin': M1N1})], loader='abi=1\ndefault=e2\n')
+S['m1n1-size'] = scenario_multi('m1n1-size', [('e2', m1n1_conf(size_off=1), {'m1n1.bin': M1N1})], loader='abi=1\ndefault=e2\n')
+S['m1n1-missing'] = scenario_multi('m1n1-missing', [('e2', m1n1_conf(), {})], loader='abi=1\ndefault=e2\n')
+S['m1n1-nosize'] = scenario_multi('m1n1-nosize', [('e2', m1n1_conf(drop=('m1n1.bin_size',)), {'m1n1.bin': M1N1})], loader='abi=1\ndefault=e2\n')
+S['entry-badtype'] = scenario_multi('entry-badtype', [('e2', m1n1_conf(typ='uboot'), {'m1n1.bin': M1N1})], loader='abi=1\ndefault=e2\n')
+S['oneshot-linux'] = scenario_multi('oneshot-linux', [E1, E2L], oneshot=token())
+S['oneshot-m1n1'] = scenario_multi('oneshot-m1n1', [E1, E2M], oneshot=token())
+S['oneshot-spent'] = scenario_multi('oneshot-spent', [E1, E2M], oneshot=token('spent'))
+S['oneshot-small'] = scenario_multi('oneshot-small', [E1, E2M], oneshot=token(pad=0))
+S['oneshot-badentry'] = scenario_multi('oneshot-badentry', [E1, E2M], oneshot=token(entry='../e2'))
+S['oneshot-pending'] = scenario_multi('oneshot-pending', [E1, E2M], oneshot=token(), pending=b'e1\n')
+S['oneshot-noentry'] = scenario_multi('oneshot-noentry', [E1, E2M], oneshot=token(entry='nothere'))
 print('\n'.join(sorted(S)))

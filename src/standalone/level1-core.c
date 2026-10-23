@@ -63,6 +63,12 @@ int l1_dev_read(struct l1_dev *d, uint64_t lba, uint32_t n, void *dst)
     return d->read(d->ctx, lba, n, dst);
 }
 
+int l1_dev_write1(struct l1_dev *d, uint64_t lba, const void *src)
+{
+    if (!d->write || lba < L1_P4_FIRST || lba >= L1_P4_END) return L1_NVME_READ;
+    return d->write(d->ctx, lba, src);
+}
+
 /* PARTUUID of the pinned partition (level1-install.h), GPT mixed-endian bytes. */
 static const uint8_t P4_GUID[16] = L1_P4_GUID_BYTES;
 #if L1_EXTRA_N
@@ -271,6 +277,68 @@ static int load_file(struct l1_load *L, struct l1_ext4 *fs, const char *path, co
     return 0;
 }
 
+/* The one-shot token (L1_ONESHOT_PATH). 0: no armed token, the default entry boots. 1: it named an entry and was spent
+ * before that entry is read (its only block rewritten with "armed" -> "spent", read back and compared). 2: an armed token
+ * that could not be spent (not exactly one 4 KiB block, no write, the read-back differs): the default entry boots. A
+ * malformed token never sends the boot to the rescue set. Uses meta page 3 (loader.conf is no longer needed) and the
+ * ext4 bounce page for the read-back. */
+static int oneshot(struct l1_load *L, struct l1_ext4 *fs, struct l1_result *R)
+{
+    uint32_t ino;
+    struct l1_inode in;
+    uint64_t lba;
+    uint8_t *b = L->meta + 3 * 4096, *c = fs->tmp + 4096;
+    const char *v, *e;
+    size_t vl, el, n = 0;
+    char name[L1_NAME_MAX];
+    if (l1_ext4_lookup_path(fs, L1_ONESHOT_PATH, &ino)) return 0;
+    if (l1_ext4_inode(fs, ino, &in) || (in.mode & 0xf000) != 0x8000 || in.size != 4096) return 2;
+    if (l1_ext4_block_of(fs, &in, 0, &lba) || l1_ext4_read(fs, &in, 0, 4096, b)) return 2;
+    if (L->pre_verify) L->pre_verify(L->hook_ctx, b, 4096);
+    while (n < 4096 && b[n]) n++;
+    if (l1_kv_get((const char *)b, n, "m4_oneshot", &v, &vl) || !key_eq(v, vl, "armed")) return 0;
+    if (l1_kv_get((const char *)b, n, "entry", &e, &el) || !l1_token_ok(e, el) || el >= L1_NAME_MAX) return 2;
+    for (size_t i = 0; i < el; i++) name[i] = e[i];
+    name[el] = 0;
+    static const char spent[] = "spent";
+    size_t at = (size_t)(v - (const char *)b);
+    for (size_t i = 0; i < 5; i++) b[at + i] = (uint8_t)spent[i];
+    step(L, "oneshot-spend", lba);
+    if (l1_dev_write1(L->dev, lba, b)) return 2;
+    if (l1_dev_read(L->dev, lba, 1, c)) return 2;
+    if (L->pre_verify) L->pre_verify(L->hook_ctx, c, 4096);
+    for (size_t i = 0; i < 4096; i++) if (c[i] != b[i]) return 2;
+    for (size_t i = 0; i <= el; i++) R->entry[i] = name[i];
+    return 1;
+}
+
+/* type=m1n1: m1n1.bin (size + CRC-32 from entry.conf) at image_dst; no board.dtb, initramfs.img or cmdline. */
+static int load_m1n1(struct l1_load *L, struct l1_ext4 *fs, struct l1_result *R, const char *conf, uint32_t n,
+                     char *path, size_t dir)
+{
+    struct l1_file_spec f;
+    const char *v;
+    size_t vl;
+    f.name = "m1n1.bin"; f.size = 0; f.crc = 0;
+    scopy(R->kver, sizeof(R->kver), "m1n1");
+    R->cmdline[0] = 0;
+    if (l1_kv_get(conf, n, "m1n1.bin_size", &v, &vl) || !parse_u64(v, vl, &f.size) || !f.size) {
+        scopy(R->file, sizeof(R->file), f.name); R->status = L1_BAD_CONF; R->detail = 6; return R->status;
+    }
+    if (l1_kv_get(conf, n, "m1n1.bin_crc32", &v, &vl) || !parse_hex32(v, vl, &f.crc)) {
+        scopy(R->file, sizeof(R->file), f.name); R->status = L1_BAD_CONF; R->detail = 7; return R->status;
+    }
+    if (f.size < L->image_floor) { scopy(R->file, sizeof(R->file), f.name); R->status = L1_TOO_LARGE; R->detail = 0; return R->status; }
+    for (size_t i = 0; i <= 8; i++) path[dir + i] = "m1n1.bin"[i];
+    step(L, f.name, f.size);
+    int rc = load_file(L, fs, path, &f, L->image_dst, L->image_window, R);
+    if (rc) { R->status = (enum l1_status)rc; return R->status; }
+    step(L, "digest_ok", 0);
+    R->image_bytes = f.size;
+    R->status = L1_OK;
+    return L1_OK;
+}
+
 int l1_path_ok(const char *p)
 {
     size_t n = 0;
@@ -357,9 +425,11 @@ int l1_run_fs(struct l1_load *L, struct l1_ext4 *fsp, struct l1_result *R)
     if (l1_kv_get((const char *)conf, n, "default", &v, &vl) || !l1_token_ok(v, vl)) { R->status = L1_BAD_CONF; R->detail = 2; return R->status; }
     for (size_t i = 0; i < vl; i++) R->entry[i] = v[i];
     R->entry[vl] = 0;
+    R->oneshot = (uint32_t)oneshot(L, &fs, R);   /* 1: R->entry is now the token's entry */
+    step(L, "oneshot", R->oneshot);
 
     char path[160];
-    size_t base = sl(L1_ENTRY_DIR), elen = vl;
+    size_t base = sl(L1_ENTRY_DIR), elen = sl(R->entry);
     for (size_t i = 0; i < base; i++) path[i] = L1_ENTRY_DIR[i];
     for (size_t i = 0; i < elen; i++) path[base + i] = R->entry[i];
     path[base + elen] = '/';
@@ -371,6 +441,13 @@ int l1_run_fs(struct l1_load *L, struct l1_ext4 *fsp, struct l1_result *R)
     step(L, "entry.conf", n);
     if (l1_kv_get((const char *)conf, n, "abi", &v, &vl) || !parse_u64(v, vl, &abi)) { R->status = L1_BAD_CONF; R->detail = 3; return R->status; }
     if (abi != L1_ABI) { R->status = L1_BAD_ABI; R->detail = 2; return R->status; }
+    /* rev 17: type= absent or linux (the three Linux files), or m1n1 (m1n1.bin only) */
+    int tr = l1_kv_get((const char *)conf, n, "type", &v, &vl);
+    if (tr < 0 || (tr == 0 && !key_eq(v, vl, "linux") && !key_eq(v, vl, "m1n1"))) { R->status = L1_BAD_CONF; R->detail = 8; return R->status; }
+    if (tr == 0 && key_eq(v, vl, "m1n1")) {
+        R->kind = L1_KIND_M1N1;
+        return load_m1n1(L, &fs, R, (const char *)conf, n, path, dir);
+    }
     if (l1_kv_get((const char *)conf, n, "kver", &v, &vl) || !l1_token_ok(v, vl)) { R->status = L1_BAD_CONF; R->detail = 4; return R->status; }
     for (size_t i = 0; i < vl; i++) R->kver[i] = v[i];
     R->kver[vl] = 0;

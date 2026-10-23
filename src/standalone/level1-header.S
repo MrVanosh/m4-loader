@@ -6,7 +6,7 @@
 .global l1_header
 l1_header:
     .long 0x4c314231        /* L1_BLOB_MAGIC */
-    .long 6                 /* L1_HOST_ABI */
+    .long 7                 /* L1_HOST_ABI */
     .long _l1_size          /* bytes used */
     .long 0
     .long l1_attempt

@@ -52,6 +52,7 @@ struct l1_rec {
     char abort_txt[120];                        /* the first abort, one line (also m4,level1-abort) */
     unsigned aborts;
     int ran, ssd, handback_done, dev_probed, live_done;
+    int full_stop;              /* rev 17: m1n1 entry: hand ANS back without our SART entries (l1_ans_release) */
     enum l1_status st;
     uint32_t ms[6], verify_ms;
     uint64_t win[4];                            /* kernel, kernel window, initrd, initrd window (m4,level1-windows) */
@@ -312,6 +313,13 @@ static int ph_leave(void *arg)
     return 0;
 }
 
+static int ph_release(void *arg)
+{
+    struct l1_rec *r = arg;
+    l1_ans_release(&r->ans);
+    return 0;
+}
+
 static int ph_stop(void *arg)
 {
     struct l1_rec *r = arg;
@@ -450,7 +458,15 @@ static void handback(struct l1_rec *r)
         /* guard status 2: a pending SError was consumed and the phase did not run: run it once more */
         int aborted = guarded(r, ph_leave, "handback");
         if (aborted == 2) aborted = guarded(r, ph_leave, "handback");
-        if (aborted || s->cpu_started || s->nvme_enabled || s->reset_touched || s->sart_added != s->sart_removed + s->sart_kept) {
+        /* rev 17: an m1n1 entry gets ANS running as iBoot left it, without our SART entries (l1_ans_release). A
+         * release that faults rejects the entry (below: the emergency, then the rescue set). */
+        if (!aborted && r->full_stop) {
+            int st = guarded(r, ph_release, "release");
+            if (st == 2) st = guarded(r, ph_release, "release");
+            if (st) aborted = st;
+        }
+        if (aborted || (!r->full_stop && (s->cpu_started || s->nvme_enabled || s->reset_touched ||
+                                          s->sart_added != s->sart_removed + s->sart_kept))) {
             if (guarded(r, ph_emergency, "emergency") == 2) guarded(r, ph_emergency, "emergency");
             /* the emergency is one guard: a block that keeps faulting must not keep CPU_CONTROL.RUN set */
             if ((s->cpu_started || s->reset_touched) && guarded(r, ph_stop, "stop") == 2) guarded(r, ph_stop, "stop");
@@ -523,7 +539,7 @@ static int ph_whole(void *arg)
     r->hal.syslog = on_syslog; r->hal.trace = on_trace; r->hal.ctx = r;
     l1_ans_init(&r->ans, &r->hal, &r->cfg, r->dma, dma_bytes);
     r->ans.deadline_us = r->attempt_t0_ns / 1000 + READ_DEADLINE_US;
-    r->dev.read = l1_ans_read; r->dev.ctx = &r->ans;
+    r->dev.read = l1_ans_read; r->dev.write = l1_ans_write; r->dev.ctx = &r->ans;
     r->load.dev = &r->dev; r->load.meta = r->meta;
     r->load.image_dst = (uint8_t *)a->kernel; r->load.image_window = a->kernel_window;
     r->load.initrd_dst = (uint8_t *)a->initrd; r->load.initrd_window = a->initrd_window;
@@ -587,13 +603,15 @@ static int ph_whole(void *arg)
     r->ms[1] = r->ans.st.ms_nvme_ready;
     r->ms[2] = r->ans.st.ms_read;
 
-    /* 3. hand ANS back whatever happened: left running, or the emergency stop if that did not take */
+    /* 3. hand ANS back whatever happened: left running (for an m1n1 entry also without our SART entries), or the
+     * emergency stop if that did not take */
+    if (r->st == L1_OK && r->res.status == L1_OK && r->res.kind == L1_KIND_M1N1) r->full_stop = 1;
     handback(r);
 
     /* 4. accept only after a clean hand-back and with no abort recorded anywhere (a retried status-2 SError is a
      * fault of earlier code: the payload it may have touched is not trusted); board.dtb must be a whole tree */
     if (r->st == L1_OK && r->res.status == L1_OK && r->aborts) set_status(r, L1_ABORT, "pending");
-    if (r->st == L1_OK && r->res.status == L1_OK &&
+    if (r->st == L1_OK && r->res.status == L1_OK && r->res.kind == L1_KIND_LINUX &&
         (r->res.dtb_bytes > a->dtb_window || h->fdt_check_full(a->dtb, (size_t)r->res.dtb_bytes) ||
          be32p((const uint8_t *)a->dtb + 4) != r->res.dtb_bytes)) {
         r->res.status = L1_BAD_DTB;
@@ -609,6 +627,8 @@ static int ph_whole(void *arg)
         scpy(a->entry, sizeof(a->entry), r->res.entry);
         scpy(a->kver, sizeof(a->kver), r->res.kver);
         scpy(a->cmdline, sizeof(a->cmdline), r->res.cmdline);
+        a->kind = r->res.kind;
+        a->oneshot = r->res.oneshot == 1;
     }
     return 0;
 }
@@ -747,6 +767,7 @@ int l1_publish(const struct l1_host *h, void *state, void *dt, size_t capacity)
     rc |= set_str(h, dt, c, "m4,boot-source", r && r->ssd ? "entry" : "rescue");
     rc |= set_str(h, dt, c, "m4,boot-entry", r && r->ssd ? r->res.entry : "rescue");
     rc |= set_str(h, dt, c, "m4,boot-reason", reason_of(r));
+    if (r && r->res.oneshot) rc |= set_str(h, dt, c, "m4,boot-oneshot", r->res.oneshot == 1 ? "spent" : "refused");
     if (detail[0]) rc |= set_str(h, dt, c, "m4,boot-detail", detail);
     /* The partitions this boot checked against the GPT (exact range and PARTUUID): Linux's NVMe write guard takes its
      * ranges from here (<first_hi first_lo end_hi end_lo> per partition, 4 KiB units, end exclusive), the root first. */

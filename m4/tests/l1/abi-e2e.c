@@ -502,6 +502,37 @@ int main(int argc, char **argv)
     snprintf(extra, sizeof(extra), "%d guard phases, %d rescue, %d not clean", phases, rescue_runs, bad_runs);
     check("E1 an abort in each guarded phase: rescue set, hand-off clean", rescue_runs > 0 && bad_runs == 0, extra);
 
+    /* ---- rev 17: m1n1 entries and the one-shot token ---- */
+    {
+        struct run R; char extra[400], why[96];
+        static const char spent[] = "m4_oneshot=spent\nentry=e2\n";
+        open_fs("oneshot-m1n1");
+        do_run(&R, 1, 1, -1);
+        int ours_gone = 1;
+        for (unsigned i = 0; i < 16; i++)
+            if (!(M.sart_init_cfg[i] & 0xff) && ((M.sart_cfg[i] & 0xff) || M.sart_pa[i] || M.sart_sz[i])) ours_gone = 0;
+        snprintf(extra, sizeof(extra), "ssd=%u kind=%u oneshot=%u image=%llu writes=%u flushes=%u sart-ours-gone=%d",
+                 R.a.ssd, R.a.kind, R.a.oneshot, (unsigned long long)R.a.image_bytes, M.writes, M.flushes, ours_gone);
+        check("F1 armed token -> m1n1 entry e2: spent first (one block + Flush), m1n1.bin at the kernel slot, ANS running without our SART entries",
+              R.a.ssd && R.a.kind == 1 && R.a.oneshot == 1 && R.a.image_bytes == 200 * 1024 + 11 && !strcmp(R.a.entry, "e2") &&
+              M.writes == 1 && M.flushes == 1 && !memcmp(M.wr_data, spent, sizeof(spent) - 1) && ours_gone && handoff_clean(why, sizeof(why)), extra);
+        open_fs("oneshot-linux");
+        do_run(&R, 1, 1, -1);
+        snprintf(extra, sizeof(extra), "ssd=%u kind=%u entry=%s source=%s writes=%u", R.a.ssd, R.a.kind, R.entry, R.source, M.writes);
+        check("F2 armed token -> Linux entry e2 boots, token spent, hand-off clean",
+              R.a.ssd && R.a.kind == 0 && R.a.oneshot == 1 && !strcmp(R.entry, "e2") && M.writes == 1 && M.flushes == 1 &&
+              handoff_clean(why, sizeof(why)), extra);
+        open_fs("oneshot-spent");
+        do_run(&R, 1, 1, -1);
+        check("F3 spent token: default entry e1, nothing written", R.a.ssd && !strcmp(R.entry, "e1") && !R.a.oneshot && M.writes == 0, R.entry);
+        open_fs("oneshot-pending");
+        do_run(&R, 1, 1, -1);
+        check("F4 boot-pending wins over an armed token: rescue, nothing written", !R.a.ssd && !strcmp(R.source, "rescue") && M.writes == 0, R.reason);
+        open_fs("m1n1-ok");
+        do_run(&R, 1, 1, -1);
+        check("F5 default m1n1 entry: kind m1n1, no write, ANS without our SART entries",
+              R.a.ssd && R.a.kind == 1 && !R.a.oneshot && M.writes == 0 && handoff_clean(why, sizeof(why)), why);
+    }
     printf("%s: %d/%d passed\n", failures ? "FAIL" : "ALL PASS", total - failures, total);
     return failures ? 1 : 0;
 }

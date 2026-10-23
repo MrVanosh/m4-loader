@@ -205,6 +205,18 @@ int l1_ext4_read(struct l1_ext4 *fs, const struct l1_inode *in, uint64_t off, ui
     return 0;
 }
 
+int l1_ext4_block_of(struct l1_ext4 *fs, const struct l1_inode *in, uint32_t lblk, uint64_t *lba)
+{
+    uint64_t pblk; uint32_t run;
+    *lba = 0;
+    if ((uint64_t)lblk * 4096 >= in->size) return fail(fs, L1X_SHORT);
+    if (ext_map(fs, in, lblk, &pblk, &run)) return fs->detail;
+    if (!pblk) return fail(fs, L1X_EXTENT);                 /* a hole or an unwritten extent has no block to rewrite */
+    if (pblk >= fs->blocks) return fail(fs, L1X_RANGE);
+    *lba = fs->base_lba + pblk;
+    return 0;
+}
+
 /* Linear lookup of one name in a directory. */
 static int dir_lookup(struct l1_ext4 *fs, const struct l1_inode *dir, const char *name, unsigned nlen, uint32_t *ino, unsigned *type)
 {

@@ -51,6 +51,7 @@ struct l1_ans_stats {
     uint32_t ms_ans_boot, ms_nvme_ready, ms_read, ms_shutdown;
     uint32_t reads, blocks, sart_added, sart_removed, syslog_lines, rtkit_version;
     uint32_t cq_phase_flips;
+    uint32_t writes;            /* rev 17: one-shot token blocks written (0 or 1) */
     uint8_t power_on, cpu_started, rtkit_up, nvme_enabled, ioq_up;
     uint8_t reset_touched;      /* the ANS PMGR reset sequence was begun and not finished (hand-back deasserts) */
     uint8_t iop_woken;          /* SET_IOP_PWR_STATE(INIT) was (about to be) sent */
@@ -113,7 +114,9 @@ int l1_ans_probe(struct l1_ans *a, unsigned item, uint32_t *v, uint64_t *addr);
 enum l1_status l1_ans_leave(struct l1_ans *a);      /* hand ANS back RUNNING: queues deleted, EN=0, RDY clear, SART kept */
 void l1_ans_emergency(struct l1_ans *a);       /* best-effort clean hand-off after a failure */
 void l1_ans_stop(struct l1_ans *a);            /* last resort: reset deasserted, RUN clear, then SART entries removed */
+void l1_ans_release(struct l1_ans *a);         /* rev 17: after leave, m1n1 entry: our SART entries removed, ANS running */
 int l1_ans_read(void *a, uint64_t lba, uint32_t n, void *dst); /* struct l1_dev callback */
+int l1_ans_write(void *a, uint64_t lba, const void *src);     /* rev 17: one block + Flush (struct l1_dev write) */
 void l1_ans_init(struct l1_ans *a, const struct l1_hal *hal, const struct l1_ans_cfg *cfg, void *mem, size_t mem_bytes);
 
 /* Register map (nvme-apple fw26 on J616s); exported for the trace test. */

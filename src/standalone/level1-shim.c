@@ -127,6 +127,7 @@ void m4_level1_attempt(u64 kernel, u64 kernel_window, u64 initrd, u64 initrd_win
 {
     out->ssd = 0; out->image_bytes = out->image_memory = out->initrd_bytes = out->dtb_bytes = 0;
     out->entry = out->cmdline = NULL;
+    out->kind = out->oneshot = 0;
 #if M4_LEVEL1
     const struct l1_blob_header *b = blob();
     if (!b) return;
@@ -166,6 +167,8 @@ void m4_level1_attempt(u64 kernel, u64 kernel_window, u64 initrd, u64 initrd_win
         out->dtb_bytes = ap->dtb_bytes;
         out->entry = ap->entry;
         out->cmdline = ap->cmdline;
+        out->kind = ap->kind;
+        out->oneshot = ap->oneshot;
     }
 #else
     /* embedded variant: the blob is never entered for ANS/NVMe */

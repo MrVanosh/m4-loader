@@ -16,7 +16,7 @@
 #include <stdarg.h>
 
 #define L1_BLOB_MAGIC 0x4c314231u /* "1B1L" little endian marker */
-#define L1_HOST_ABI 6u
+#define L1_HOST_ABI 7u   /* 7: rev 17, kind and oneshot in struct l1_attempt_args */
 
 /* = struct m4_l1_guard (level1-guard.S). status: 0 ran, 1 aborted inside fn, 2 an SError pending at entry
  * was taken, 3 refused. vector: current-EL slot 0..7 (4 = SPx sync, 7 = SPx SError), 0xff none. */
@@ -70,6 +70,8 @@ struct l1_attempt_args {
     uint32_t ssd;                /* 1: Image, initramfs.img and board.dtb of the default entry are in place and verified */
     uint64_t image_bytes, image_memory, initrd_bytes, dtb_bytes;
     char entry[64], kver[64], cmdline[1025];
+    uint32_t kind;               /* rev 17: L1_KIND_LINUX, or L1_KIND_M1N1: image_bytes of m1n1.bin at kernel, ANS stopped */
+    uint32_t oneshot;            /* rev 17: 1 = the one-shot token chose this entry (and was spent) */
     void *state;                 /* opaque, passed back to publish */
     /* in, set by the shim before l1_recover: the guard record of the whole attempt */
     struct l1_exec_result guard;

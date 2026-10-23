@@ -20,6 +20,11 @@
 #define L1_LOADER_CONF "/boot/m4/loader.conf"
 #define L1_PENDING_PATH "/boot/m4/boot-pending"
 #define L1_ENTRY_DIR "/boot/m4/entries/"
+/* rev 17: one-shot token, exactly one 4 KiB block of text ("m4_oneshot=armed", "entry=<name>"). The loader boots that entry
+ * once: before it reads the entry it rewrites "armed" to "spent" in place (the token's only block, inside the root partition). */
+#define L1_ONESHOT_PATH "/boot/m4/oneshot"
+#define L1_KIND_LINUX 0u
+#define L1_KIND_M1N1 1u          /* entry.conf type=m1n1: one file, m1n1.bin, handed to m1n1 as a chainloaded stage */
 #define L1_CONF_MAX 4096u        /* loader.conf and entry.conf */
 #define L1_CMDLINE_MAX 1024u     /* cmdline= value, bytes without the NUL */
 #define L1_NAME_MAX 64u          /* entry name and kver, with the NUL */
@@ -64,9 +69,13 @@ struct l1_dev {
     int (*read)(void *ctx, uint64_t lba, uint32_t n, void *dst);
     void *ctx;
     uint64_t reads, blocks; /* bookkeeping */
+    /* rev 17, optional: writes one 4 KiB block (the one-shot token only); NULL = read-only device */
+    int (*write)(void *ctx, uint64_t lba, const void *src);
 };
 /* Range guard in front of every device read: GPT (LBA 0..7) or inside p4. */
 int l1_dev_read(struct l1_dev *d, uint64_t lba, uint32_t n, void *dst);
+/* The only write: one block inside p4 (the root partition). Returns 0 or non-zero. */
+int l1_dev_write1(struct l1_dev *d, uint64_t lba, const void *src);
 
 /* ---- SHA-256 ----------------------------------------------------------- */
 struct l1_sha {
@@ -109,6 +118,8 @@ int l1_ext4_inode(struct l1_ext4 *, uint32_t ino, struct l1_inode *);
 /* Reads [off, off+len) of a regular file into dst. dst must be 4 KiB aligned
  * when len >= 4 KiB; the byte range must lie inside the file. */
 int l1_ext4_read(struct l1_ext4 *, const struct l1_inode *, uint64_t off, uint64_t len, void *dst);
+/* Absolute disk LBA of a file's logical block lblk; 0 = refused (hole, unwritten, out of the file system). */
+int l1_ext4_block_of(struct l1_ext4 *, const struct l1_inode *, uint32_t lblk, uint64_t *lba);
 /* Same, hashing as it goes would need a second pass; the caller hashes. */
 
 /* ---- conf text (key=value lines) --------------------------------------- */
@@ -143,9 +154,12 @@ struct l1_result {
     char file[16];              /* the file a size/digest/missing refusal is about */
     uint64_t image_bytes, image_memory, initrd_bytes, dtb_bytes;
     uint32_t extra_ok;          /* bit x: L1_EXTRA x was found in the GPT with its exact range and PARTUUID */
+    uint32_t kind;              /* L1_KIND_LINUX or L1_KIND_M1N1 (image_bytes = m1n1.bin bytes, at image_dst) */
+    uint32_t oneshot;           /* 0 none, 1 the token chose this entry (and was spent), 2 an armed token could not be spent */
 };
-/* Runs the whole policy: GPT, ext4 (clean), boot-pending, loader.conf, entry.conf, load + verify of Image,
- * initramfs.img and board.dtb. On L1_OK they are at image_dst/initrd_dst/dtb_dst. Never writes the device. */
+/* Runs the whole policy: GPT, ext4 (clean), boot-pending, loader.conf, the one-shot token, entry.conf, load + verify of
+ * Image, initramfs.img and board.dtb (type=m1n1: m1n1.bin). On L1_OK they are at image_dst/initrd_dst/dtb_dst. The only
+ * device write is the spent one-shot token (l1_dev_write1). */
 int l1_run(struct l1_load *, struct l1_result *);
 /* The part after the mount (boot-pending ... files); the caller has zeroed the result. */
 int l1_run_fs(struct l1_load *, struct l1_ext4 *, struct l1_result *);

@@ -670,6 +670,27 @@ int l1_ans_read(void *ctx, uint64_t lba, uint32_t n, void *dst)
     return 0;
 }
 
+/* rev 17: the one write, a single 4 KiB block (the spent one-shot token): Write, then Flush so the block is on the media
+ * before the boot goes on (the next stage may hang and be powered off). The caller has range-checked lba. */
+int l1_ans_write(void *ctx, uint64_t lba, const void *src)
+{
+    struct l1_ans *a = ctx;
+    uint64_t pa = (uint64_t)(uintptr_t)src;
+    if (!a->st.ioq_up || (pa & 4095)) return L1_NVME_READ;
+    if (a->deadline_us && now(a) > a->deadline_us) return L1_TIMEOUT;
+    struct nvme_cmd c;
+    zero(&c, sizeof(c));
+    c.opcode = 0x01; c.nsid = 1; c.prp1 = pa;
+    c.cdw10 = (uint32_t)lba; c.cdw11 = (uint32_t)(lba >> 32); c.cdw12 = 0;
+    a->hal->clean((void *)(uintptr_t)src, 4096);    /* the device reads the block from memory */
+    if (nvme_exec(a, 0, &c, US(200))) return L1_NVME_READ;
+    zero(&c, sizeof(c));
+    c.opcode = 0x00; c.nsid = 1;                       /* Flush */
+    if (nvme_exec(a, 0, &c, US(1000))) return L1_NVME_READ;
+    a->st.writes++;
+    return 0;
+}
+
 /* R44 hand-back for a wake-mode session (RTKit up): ANS stays RUNNING with its host session, exactly as iBoot left it
  * (R41/R42 native: INIT to a running firmware restarts the RTKit handshake at once; a firmware we put to sleep is what
  * Linux never woke). Delete the IO queues, CC.EN = 0 (no CC.SHN: nothing was written) and wait RDY clear, bounded.
@@ -711,6 +732,17 @@ enum l1_status l1_ans_leave(struct l1_ans *a)
 /* Last resort, its own guard (review L2-REV-06): the emergency is one guard and dies at its first faulting
  * access; a block that keeps faulting must not keep CPU_CONTROL.RUN set (Linux would take the RTKit wake path) or
  * the ANS PMGR word in RESET / DEV_DISABLE. Order: reset deasserted, RUN cleared, then the SART entries. */
+/* rev 17, after l1_ans_leave for an m1n1 entry: ANS stays RUNNING as iBoot left it (m1n1's rtkit_boot sends INIT, as
+ * Linux does), but our SART entries go: the firmware's syslog/ioreport buffers are in the loader's pool, which m1n1 does
+ * not know is reserved, so until its INIT hands out new ones the firmware must not reach them. iBoot's entries (the
+ * snapshot) stay. */
+void l1_ans_release(struct l1_ans *a)
+{
+    a->dead = 0;
+    sart_remove_all(a);
+    a->st.sart_kept = 0;
+}
+
 void l1_ans_stop(struct l1_ans *a)
 {
     a->dead = 0;

@@ -66,6 +66,10 @@ static struct {
     int ever_run;                       /* CPU_CONTROL.RUN was written at least once */
     int inits;                          /* SET_IOP_PWR_STATE(INIT) messages received (wake path) */
     uint32_t sart_init_cfg[16], sart_init_pa[16], sart_init_sz[16];   /* what iBoot left (wake start) */
+    /* rev 17: the one-shot token's write (one block inside p4) and the Flush after it */
+    unsigned writes, flushes;
+    uint64_t wr_lba;
+    uint8_t wr_data[4096];
 } M;
 
 #define VIOL(...) do { if (M.violations < 8) snprintf(M.viol[M.violations], 96, __VA_ARGS__); M.violations++; } while (0)
@@ -315,6 +319,20 @@ static void nvme_doorbell(int admin, unsigned tag)
         }
     } else {
         M.io_cmds++;
+        if (op == 0x00) {                                          /* rev 17: Flush after the token write */
+            if (prp1 || nsid != 1) VIOL("flush prp %llx nsid %u", (unsigned long long)prp1, nsid);
+            if (!M.writes) VIOL("flush without a write");
+            M.flushes++; complete(0, tag, 0); return;
+        }
+        if (op == 0x01) {                                          /* rev 17: exactly one block, inside p4 */
+            uint64_t wl = cdw10 | (uint64_t)cdw11 << 32;
+            if ((cdw12 & 0xffff) != 0 || (tcb[4] | (unsigned)tcb[5] << 8)) VIOL("write of more than one block");
+            if (wl < L1_P4_FIRST || wl >= L1_P4_END) VIOL("write outside p4: %llu", (unsigned long long)wl);
+            if (M.writes) VIOL("second write");
+            if (prp1 < (uint64_t)(uintptr_t)U || prp1 + 4096 > (uint64_t)(uintptr_t)U + UNI) { VIOL("write PRP outside universe"); return; }
+            memcpy(M.wr_data, dv(prp1), 4096); M.wr_lba = wl; M.writes++;
+            complete(0, tag, 0); return;
+        }
         if (op != 0x02) { VIOL("non-read IO opcode %02x", op); return; }
         uint64_t lba = cdw10 | (uint64_t)cdw11 << 32;
         unsigned n = (cdw12 & 0xffff) + 1;
@@ -333,7 +351,7 @@ static void nvme_doorbell(int admin, unsigned tag)
         }
         for (unsigned i = 0; i < n; i++) {
             if (page[i] < (uint64_t)(uintptr_t)U || page[i] + 4096 > (uint64_t)(uintptr_t)U + UNI) { VIOL("PRP outside universe"); return; }
-            memcpy(dv(page[i]), disk_block(lba + i), 4096);
+            memcpy(dv(page[i]), M.writes && lba + i == M.wr_lba ? M.wr_data : disk_block(lba + i), 4096);
         }
         M.reads_ok++;
         complete(0, tag, 0);
