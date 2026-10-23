@@ -356,6 +356,21 @@ static void delete_pool(void *t)
 /* The DTS carries the DCP/DART/mailbox/display nodes disabled and POOL region placeholders. An accepted capture
  * adopts the placeholders (same names, reg and iommu-addresses rev 10 emitted), fills the three memory-region lists
  * and enables the five stage-3 nodes. Otherwise the pool is deleted and every node stays disabled. */
+/* The T6040 GPU driver identifies its firmware build by the macOS version whose boot firmware
+ * loaded it, as m1n1's dt_set_gpu() reports it on the node behind the gpu alias. 0 written or no
+ * GPU node, 1 another boot firmware (nothing written: the driver refuses unknown builds). */
+int m4_gpu_fixup(void *t, size_t capacity)
+{
+    const uint32_t version[] = {26, 6, 2};
+    int ret, gpu = fdt_path_offset(t, "gpu");
+    if (gpu < 0) return 0;
+    if (!adt_bytes("/chosen", "firmware-version", boot_firmware, sizeof(boot_firmware))) return 1;
+    /* The DCP and media fix-ups leave the tree packed. */
+    if ((ret = fdt_open_into(t, t, (int)capacity)) < 0) return ret;
+    if ((ret = u32s(t, fdt_path_offset(t, "gpu"), "apple,firmware-version", version, 3))) return ret;
+    return fdt_pack(t);
+}
+
 int m4_dcp_fixup(void *t, size_t capacity, const struct m4_display_handoff *h)
 {
     static struct region regions[MAX_REGIONS];

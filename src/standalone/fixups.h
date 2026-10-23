@@ -27,4 +27,5 @@ struct m4_display_handoff;
 int m4_dcp_fixup(void *dt, size_t capacity, const struct m4_display_handoff *h);
 /* usb/avd/audio groups are deleted when their ADT gate fails; AOP DRAM segments are reserved from the ADT */
 int m4_media_fixups(void *dt, size_t capacity);
+int m4_gpu_fixup(void *dt, size_t capacity);
 #endif

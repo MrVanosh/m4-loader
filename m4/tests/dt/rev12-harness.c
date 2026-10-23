@@ -221,6 +221,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "dcp_fixup rc=%d\n", rc);
     rc = m4_media_fixups(tree, sizeof(tree));
     fprintf(stderr, "media_fixups rc=%d\n", rc);
+    rc = m4_gpu_fixup(tree, sizeof(tree));
+    fprintf(stderr, "gpu_fixup rc=%d\n", rc);
     rc = fdt_pack(tree); (void)rc;
     FILE *o2 = fopen(argv[3], "wb"); fwrite(tree, 1, fdt_totalsize(tree), o2); fclose(o2);
     fprintf(stderr, "final dtb bytes=%u\n", fdt_totalsize(tree));
