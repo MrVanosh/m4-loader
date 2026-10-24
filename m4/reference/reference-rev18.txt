@@ -1,7 +1,7 @@
-# rev 18 reference, observed by m4/check.sh on 2026-10-24 in the m4-loader-build container with the rev 17 kit inputs (recovered; librust.a from Fedora rust 1.99.0, the native ADT as both ADT files). The GPU fix-up grew dcp-fdt.c past a 16 KiB step, so the image is 16 KiB larger than rev 17 and the layout offsets after it moved; the layout status, level1.bin and every test result are unchanged; the harness trees are identical to rev 17 (the reference boards have no gpu alias; the GPU fill is checked with KERNEL_DTB).
+# rev 18 reference, observed by m4/check.sh on 2026-10-24 in the m4-loader-build container with the rev 17 kit inputs (recovered; librust.a from Fedora rust 1.99.0, the native ADT as both ADT files). The GPU fix-up grew dcp-fdt.c past a 16 KiB step, so the image is 16 KiB larger than rev 17 and the layout offsets after it moved; the layout status, level1.bin and every test result are unchanged; the harness trees are identical to rev 17 (the reference boards have no gpu alias; the GPU fill is checked with KERNEL_DTB). Updated for the GPU companions commit: dcp-fdt.o and the image hash only.
 version rev18
 build.version rev18
-build.m1n1.bin.sha256 d4703547b46f1ea1a6373e26036fc90313019be4259557b9b49790458a758884
+build.m1n1.bin.sha256 1ddcfb13fbdab082facc4938c788f4dac284cdbbe89ef2214d85993620a2ca66
 build.m1n1.bin.bytes 77594624
 build.level1.bin.bytes 28772
 build.level1.bin.sha256 ba5ac65ef5d645af505ce6997fc3c176d964376676fe4ad4620e69a66a473ba3
@@ -27,7 +27,7 @@ build.payload.rescue-cmdline.txt.sha256 4946386746ac8ead78d15d90f9669de2a811ba90
 build.payload.pcie.bin.sha256 f7a338c7679a4fdbb5588805cda295f0f6d82372c1543def2a2101b39132ed32
 build.warnings 4
 objects.count 171
-objects.listsha256 a75dfe7709d0ac3cc5a23dce39542b86d8c5bc2e71e510d2b3fb910953c8d9ca
+objects.listsha256 6e2565f618888f99b14d1d7a6518bb47e2878977387eaedd2671d4cfcaf12d00
 qemu.guard EL2+EL1:PASS
 qemu.guard.EL2 checks=00000000000000fc,fails=0000000000000000
 qemu.guard.EL1 checks=0000000000000116,fails=0000000000000000
@@ -193,7 +193,7 @@ object 8243c2243ac247da370da0f50bd71faf3114322841d70dbe9a440a4177cc14b9 standalo
 object 9b5d033ae4c8d2a81bf27b8da247f9a20c3b1e648d4f1276e486c8db1717fed3 standalone/dart-capture.o
 object 99af2030fcc7d98fb1adeebbb2cbc0702b43c1008f2547342a57aabb36af1335 standalone/dart-preserve.o
 object 9a30c7a9744a61785f70c34d6b0c76d8d263528f6a0a1f7ebdce91ee995c3678 standalone/dart-tables.o
-object 08fbf8fe3ca0d2a07a5b320426a6cddaf97054116c0aada009e964ab7f370276 standalone/dcp-fdt.o
+object e2dff59a1a8881407402bb9c6fa9e84ec7b62d19e9720748bf6c46890dbcd9e3 standalone/dcp-fdt.o
 object d1db8bf5d6696f1f40abaf22cc282b423eb9c4d58f8187512087b1b33526c9da standalone/direct-bluetooth.o
 object a7de33901a63d7d1429f26848b249bcb309417ee47d1aa3cf9b894d71c9f6420 standalone/direct-entry.o
 object fcd67c9503d840e65c1b5403702f5c78b0193bcc83bac737af02fa9795ee00ad standalone/direct-smp-entry.o
