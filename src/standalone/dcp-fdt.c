@@ -356,19 +356,163 @@ static void delete_pool(void *t)
 /* The DTS carries the DCP/DART/mailbox/display nodes disabled and POOL region placeholders. An accepted capture
  * adopts the placeholders (same names, reg and iommu-addresses rev 10 emitted), fills the three memory-region lists
  * and enables the five stage-3 nodes. Otherwise the pool is deleted and every node stays disabled. */
-/* The T6040 GPU driver identifies its firmware build by the macOS version whose boot firmware
- * loaded it, as m1n1's dt_set_gpu() reports it on the node behind the gpu alias. 0 written or no
- * GPU node, 1 another boot firmware (nothing written: the driver refuses unknown builds). */
+/* The boot firmware that loads the 25G83 GPU firmware: macOS 26.6.2's, and the same build as a stub installed from
+ * Recovery reports it. The driver proves the build from the loaded TEXT (fw-text); the version only names it. */
+static const char *const gpu_boot_firmware[] = {"mBoot-18000.161.10", "mBoot-18000.161.10.701.1"};
+
+static int adt_u64(int node, const char *key, uint64_t *v)
+{
+    uint32_t len;
+    const void *p = adt_getprop(adt, node, key, &len);
+    if (!p || len != sizeof(*v)) return -1;
+    memcpy(v, p, sizeof(*v));
+    return 0;
+}
+
+/* The ADT source of each GPU reserved region, by its memory-region-names entry: an sgx "<key>-base"/"-size" pair, or
+ * (key NULL) the firmware's TEXT segment, gfx-asc segment-ranges[0]. */
+static const struct { const char *name, *key; } gpu_regions[] = {
+    {"ttbs", "gpu-region"}, {"pagetables", "gfx-shared-region"}, {"handoff", "gfx-handoff"},
+    {"l2-pagetables", "gfx-shared-l2-region"}, {"fw-data", "gfx-data"}, {"fw-text", NULL},
+};
+
+static int gpu_region_source(int sgx, int asc, const char *key, uint64_t *base, uint64_t *size)
+{
+    if (!key) {
+        /* segment-ranges entries: phys, iova, remap (u64 each), size, flags (u32 each) */
+        uint32_t len, sz;
+        const uint8_t *seg = adt_getprop(adt, asc, "segment-ranges", &len);
+        const char *names = adt_getprop(adt, asc, "segment-names", &len);
+        if (!seg || !names || strncmp(names, "__TEXT;", 7)) return -1;
+        memcpy(base, seg, 8);
+        memcpy(&sz, seg + 24, 4);
+        *size = sz;
+    } else {
+        char k[48];
+        snprintf(k, sizeof(k), "%s-base", key);
+        if (adt_u64(sgx, k, base)) return -1;
+        snprintf(k, sizeof(k), "%s-size", key);
+        if (adt_u64(sgx, k, size)) return -1;
+    }
+    return *base && *size && !(*base & 0x3fff) && !(*size & 0x3fff) ? 0 : -1;
+}
+
+/* Every region the GPU node names gets its reg from the ADT and is enabled; a name without an ADT source fails. */
+static int gpu_fill_regions(void *t, int sgx, int asc)
+{
+    int len, gpu = fdt_path_offset(t, "gpu");
+    const fdt32_t *ph = gpu < 0 ? NULL : fdt_getprop(t, gpu, "memory-region", &len);
+    const char *names = gpu < 0 ? NULL : fdt_getprop(t, gpu, "memory-region-names", NULL);
+    if (!ph || !names || len <= 0 || len % 4) return -1;
+    for (int i = 0; i < len / 4; i++) {
+        const char *name = fdt_stringlist_get(t, fdt_path_offset(t, "gpu"), "memory-region-names", i, NULL);
+        unsigned r = 0;
+        while (r < sizeof(gpu_regions) / sizeof(*gpu_regions) && (!name || strcmp(name, gpu_regions[r].name))) r++;
+        uint64_t reg[2];
+        if (r == sizeof(gpu_regions) / sizeof(*gpu_regions) ||
+            gpu_region_source(sgx, asc, gpu_regions[r].key, &reg[0], &reg[1]))
+            return -1;
+        /* the GPU node and its phandle list can move with every edit: resolve both again */
+        ph = fdt_getprop(t, fdt_path_offset(t, "gpu"), "memory-region", NULL);
+        int node = fdt_node_offset_by_phandle(t, fdt32_to_cpu(ph[i])), ret;
+        if (node < 0) return -1;
+        if ((ret = reg_prop(t, node, reg, 2, 0)) < 0) return ret;
+        fdt_delprop(t, node, "status");
+        char unit[48];
+        const char *old = fdt_get_name(t, node, NULL), *at = old ? strchr(old, '@') : NULL;
+        snprintf(unit, sizeof(unit), "%.*s@%lx", (int)(at ? at - old : (old ? (long)strlen(old) : 0)), old ? old : "",
+                 (unsigned long)reg[0]);
+        if ((ret = fdt_set_name(t, node, unit)) < 0) return ret;
+    }
+    return 0;
+}
+
+/* ADT perf-states: perf-state-table-count tables of perf-state-count {Hz, mV} rows, table after table. Each OPP of
+ * the operating-points-v2 table, in order, gets the row's frequency and one microvolt cell per table. */
+static int gpu_fill_opps(void *t, int sgx)
+{
+    uint32_t count, tables, len;
+    const uint32_t *rows = adt_getprop(adt, sgx, "perf-states", &len);
+    if (ADT_GETPROP(adt, sgx, "perf-state-count", &count) < 0 ||
+        ADT_GETPROP(adt, sgx, "perf-state-table-count", &tables) < 0 || !rows || !count || count > 32 ||
+        !tables || tables > 2 || len != count * tables * 8)
+        return -1;
+    int gpu = fdt_path_offset(t, "gpu"), plen;
+    const fdt32_t *ph = gpu < 0 ? NULL : fdt_getprop(t, gpu, "operating-points-v2", &plen);
+    int opps = ph && plen == 4 ? fdt_node_offset_by_phandle(t, fdt32_to_cpu(*ph)) : -1, opp;
+    if (opps < 0) return -1;
+    uint32_t i = 0;
+    fdt_for_each_subnode(opp, t, opps) {
+        uint32_t uv[2];
+        if (i >= count) return -1;
+        for (uint32_t k = 0; k < tables; k++) {
+            if (rows[(k * count + i) * 2] != rows[i * 2]) return -1;
+            uv[k] = rows[(k * count + i) * 2 + 1] * 1000;
+        }
+        int ret;
+        if ((ret = fdt_setprop_u64(t, opp, "opp-hz", rows[i * 2])) < 0 ||
+            (ret = u32s(t, opp, "opp-microvolt", uv, tables)) < 0)
+            return ret;
+        i++;
+    }
+    return i == count ? 0 : -1;
+}
+
+/* ADT cs-/afr-perf-states: dies and count (u64), then count rows per die of {uV, Hz} (u64); the J616s has one more
+ * u64 after them, which is not an operating point. One cell per die. */
+static int gpu_fill_aux_opps(void *t, int sgx, const char *key, const char *prop)
+{
+    uint32_t len;
+    const uint64_t *ps = adt_getprop(adt, sgx, key, &len);
+    if (!ps || len < 16) return -1;
+    uint64_t dies = ps[0], count = ps[1];
+    if (!dies || dies > 2 || !count || count > 32 || len < 16 + dies * count * 16) return -1;
+    int gpu = fdt_path_offset(t, "gpu"), plen;
+    const fdt32_t *ph = gpu < 0 ? NULL : fdt_getprop(t, gpu, prop, &plen);
+    int opps = ph && plen == 4 ? fdt_node_offset_by_phandle(t, fdt32_to_cpu(*ph)) : -1, opp;
+    if (opps < 0) return -1;
+    uint32_t i = 0;
+    fdt_for_each_subnode(opp, t, opps) {
+        uint32_t uv[2];
+        if (i >= count) return -1;
+        for (uint64_t d = 0; d < dies; d++) uv[d] = (uint32_t)ps[2 + (d * count + i) * 2];
+        int ret;
+        if ((ret = fdt_setprop_u64(t, opp, "opp-hz", ps[2 + i * 2 + 1])) < 0 ||
+            (ret = u32s(t, opp, "opp-microvolt", uv, (unsigned)dies)) < 0)
+            return ret;
+        i++;
+    }
+    return i == count ? 0 : -1;
+}
+
+/* The J616s GPU node carries no per-unit data of its own: the boot loader fills it from this unit's ADT, as m1n1's
+ * dt_set_gpu() does on other SoCs (the reserved regions, the operating points with their voltages, the CS and AFR
+ * operating points, the firmware version), and enables it last. Anything missing leaves the GPU disabled, with the
+ * reason in /chosen m4,gpu. 0 filled or no GPU node, 1 left disabled, <0 a tree error. */
 int m4_gpu_fixup(void *t, size_t capacity)
 {
     const uint32_t version[] = {26, 6, 2};
-    int ret, gpu = fdt_path_offset(t, "gpu");
-    if (gpu < 0) return 0;
-    if (!adt_bytes("/chosen", "firmware-version", boot_firmware, sizeof(boot_firmware))) return 1;
+    const char *why = NULL;
+    int ret, known = 0;
+    if (fdt_path_offset(t, "gpu") < 0) return 0;
+    for (unsigned i = 0; i < sizeof(gpu_boot_firmware) / sizeof(*gpu_boot_firmware); i++)
+        known |= adt_bytes("/chosen", "firmware-version", gpu_boot_firmware[i], strlen(gpu_boot_firmware[i]) + 1);
+    int sgx = adt_path_offset(adt, "/arm-io/sgx"), asc = adt_path_offset(adt, "/arm-io/gfx-asc");
     /* The DCP and media fix-ups leave the tree packed. */
     if ((ret = fdt_open_into(t, t, (int)capacity)) < 0) return ret;
-    if ((ret = u32s(t, fdt_path_offset(t, "gpu"), "apple,firmware-version", version, 3))) return ret;
-    return fdt_pack(t);
+    if (!known) why = "boot-firmware";
+    else if (sgx < 0 || asc < 0) why = "adt";
+    else if ((ret = gpu_fill_regions(t, sgx, asc))) why = "regions";
+    else if ((ret = gpu_fill_opps(t, sgx))) why = "opps";
+    else if ((ret = gpu_fill_aux_opps(t, sgx, "cs-perf-states", "apple,cs-opp"))) why = "cs-opps";
+    else if ((ret = gpu_fill_aux_opps(t, sgx, "afr-perf-states", "apple,afr-opp"))) why = "afr-opps";
+    else if ((ret = u32s(t, fdt_path_offset(t, "gpu"), "apple,firmware-version", version, 3)) < 0) return ret;
+    if (ret < -1) return ret; /* libfdt error (-1 is "no ADT source") */
+    if ((ret = fdt_setprop_string(t, fdt_path_offset(t, "gpu"), "status", why ? "disabled" : "okay")) < 0) return ret;
+    /* resolved after the status edit, which can move it */
+    int chosen = fdt_path_offset(t, "/chosen");
+    if (chosen >= 0 && (ret = fdt_setprop_string(t, chosen, "m4,gpu", why ? why : "filled")) < 0) return ret;
+    return fdt_pack(t) ? -1 : !!why;
 }
 
 int m4_dcp_fixup(void *t, size_t capacity, const struct m4_display_handoff *h)
