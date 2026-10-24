@@ -485,10 +485,49 @@ static int gpu_fill_aux_opps(void *t, int sgx, const char *key, const char *prop
     return i == count ? 0 : -1;
 }
 
+static uint32_t single_phandle(void *t, int node, const char *prop)
+{
+    int len;
+    const fdt32_t *p = node < 0 ? NULL : fdt_getprop(t, node, prop, &len);
+    return p && len == 4 ? fdt32_to_cpu(*p) : 0;
+}
+
+static int set_always_on(void *t, int node, int on)
+{
+    if (node < 0) return node;
+    if (on) return fdt_setprop_empty(t, node, "apple,always-on");
+    int ret = fdt_delprop(t, node, "apple,always-on");
+    return ret == -FDT_ERR_NOTFOUND ? 0 : ret;
+}
+
+/* The GPU's companions follow its status (t6040-j616s.dts): its mailbox is enabled, and its power state, that state's
+ * parent and the PMP report entry on it are always on, so that the PMP sees the GPU on exactly while it runs. With no
+ * GPU driver an always-on PMP report crashes the PMP firmware. -1 when the tree does not describe them. */
+static int gpu_companions(void *t, int on)
+{
+    int gpu = fdt_path_offset(t, "gpu"), ret, node;
+    uint32_t mbox = single_phandle(t, gpu, "mboxes"), ps = single_phandle(t, gpu, "power-domains");
+    uint32_t parent = single_phandle(t, fdt_node_offset_by_phandle(t, ps), "power-domains");
+    unsigned reports = 0;
+    if (!mbox || !ps || !parent || fdt_node_offset_by_phandle(t, mbox) < 0) return -1;
+    if ((ret = fdt_setprop_string(t, fdt_node_offset_by_phandle(t, mbox), "status", on ? "okay" : "disabled")) < 0 ||
+        (ret = set_always_on(t, fdt_node_offset_by_phandle(t, ps), on)) < 0 ||
+        (ret = set_always_on(t, fdt_node_offset_by_phandle(t, parent), on)) < 0)
+        return ret;
+    /* an edit inside a node moves only what follows it, so the search goes on from the edited node */
+    for (node = fdt_node_offset_by_compatible(t, -1, "apple,t6000-pmp-v2-report-entry"); node >= 0;
+         node = fdt_node_offset_by_compatible(t, node, "apple,t6000-pmp-v2-report-entry"))
+        if (single_phandle(t, node, "power-domains") == ps) {
+            if ((ret = set_always_on(t, node, on)) < 0) return ret;
+            reports++;
+        }
+    return reports == 1 ? 0 : -1;
+}
+
 /* The J616s GPU node carries no per-unit data of its own: the boot loader fills it from this unit's ADT, as m1n1's
  * dt_set_gpu() does on other SoCs (the reserved regions, the operating points with their voltages, the CS and AFR
- * operating points, the firmware version), and enables it last. Anything missing leaves the GPU disabled, with the
- * reason in /chosen m4,gpu. 0 filled or no GPU node, 1 left disabled, <0 a tree error. */
+ * operating points, the firmware version), and enables it and its companions last. Anything missing leaves the GPU and
+ * its companions disabled, with the reason in /chosen m4,gpu. 0 filled or no GPU node, 1 left disabled, <0 a tree error. */
 int m4_gpu_fixup(void *t, size_t capacity)
 {
     const uint32_t version[] = {26, 6, 2};
@@ -508,6 +547,9 @@ int m4_gpu_fixup(void *t, size_t capacity)
     else if ((ret = gpu_fill_aux_opps(t, sgx, "afr-perf-states", "apple,afr-opp"))) why = "afr-opps";
     else if ((ret = u32s(t, fdt_path_offset(t, "gpu"), "apple,firmware-version", version, 3)) < 0) return ret;
     if (ret < -1) return ret; /* libfdt error (-1 is "no ADT source") */
+    if (!why && (ret = gpu_companions(t, 1)) == -1) why = "companions";
+    if (ret < -1) return ret;
+    if (why && (ret = gpu_companions(t, 0)) < -1) return ret; /* -1: nothing to turn off */
     if ((ret = fdt_setprop_string(t, fdt_path_offset(t, "gpu"), "status", why ? "disabled" : "okay")) < 0) return ret;
     /* resolved after the status edit, which can move it */
     int chosen = fdt_path_offset(t, "/chosen");
