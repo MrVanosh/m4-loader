@@ -34,7 +34,9 @@ static const uint64_t disp0_reg[] = {0x200000000, 0x4000000, 0x202240000, 0x1000
                                      0x304800000, 0xbc000};
 /* ADT order is not-empty, empty per pair; emitted as empty, not-empty. */
 static const uint32_t dcp_irq[] = {0x478, 0x477, 0x47a, 0x479};
-static const char boot_firmware[] = "mBoot-18000.161.10";
+/* The boot firmware that loads the 25G83 firmware: macOS 26.6.2's, and the same build as a stub installed from Recovery
+ * (25G241) reports it. */
+static const char *const boot_firmware[] = {"mBoot-18000.161.10", "mBoot-18000.161.10.701.1"};
 
 struct region { uint64_t pa, size, iova[3]; uint32_t users; };
 
@@ -46,6 +48,13 @@ static int adt_bytes(const char *path, const char *key, const void *want, uint32
     return p && len >= bytes && !memcmp(p, want, bytes);
 }
 
+static int adt_boot_firmware(void)
+{
+    for (unsigned i = 0; i < sizeof(boot_firmware) / sizeof(*boot_firmware); i++)
+        if (adt_bytes("/chosen", "firmware-version", boot_firmware[i], strlen(boot_firmware[i]) + 1)) return 1;
+    return 0;
+}
+
 static int adt_regs(const char *path, const uint64_t *want, unsigned words)
 {
     return adt_bytes(path, "reg", want, words * sizeof(*want));
@@ -55,7 +64,7 @@ static int adt_layout(void)
 {
     const uint64_t range[] = {0, ARMIO};
     const uint32_t one = 1, dart_irq = 0x442, dcp_sid = 0x17, piodma_sid = 0x10;
-    return adt_bytes("/chosen", "firmware-version", boot_firmware, sizeof(boot_firmware)) &&
+    return adt_boot_firmware() &&
            adt_bytes("/arm-io", "ranges", range, sizeof(range)) &&
            adt_regs("/arm-io/dcp", dcp_reg, 2) &&
            adt_bytes("/arm-io/dcp", "interrupts", dcp_irq, sizeof(dcp_irq)) &&
@@ -356,9 +365,6 @@ static void delete_pool(void *t)
 /* The DTS carries the DCP/DART/mailbox/display nodes disabled and POOL region placeholders. An accepted capture
  * adopts the placeholders (same names, reg and iommu-addresses rev 10 emitted), fills the three memory-region lists
  * and enables the five stage-3 nodes. Otherwise the pool is deleted and every node stays disabled. */
-/* The boot firmware that loads the 25G83 GPU firmware: macOS 26.6.2's, and the same build as a stub installed from
- * Recovery reports it. The driver proves the build from the loaded TEXT (fw-text); the version only names it. */
-static const char *const gpu_boot_firmware[] = {"mBoot-18000.161.10", "mBoot-18000.161.10.701.1"};
 
 static int adt_u64(int node, const char *key, uint64_t *v)
 {
@@ -532,10 +538,10 @@ int m4_gpu_fixup(void *t, size_t capacity)
 {
     const uint32_t version[] = {26, 6, 2};
     const char *why = NULL;
-    int ret, known = 0;
+    int ret, known;
     if (fdt_path_offset(t, "gpu") < 0) return 0;
-    for (unsigned i = 0; i < sizeof(gpu_boot_firmware) / sizeof(*gpu_boot_firmware); i++)
-        known |= adt_bytes("/chosen", "firmware-version", gpu_boot_firmware[i], strlen(gpu_boot_firmware[i]) + 1);
+    /* The driver proves the GPU firmware build from the loaded TEXT (fw-text); the version only names it. */
+    known = adt_boot_firmware();
     int sgx = adt_path_offset(adt, "/arm-io/sgx"), asc = adt_path_offset(adt, "/arm-io/gfx-asc");
     /* The DCP and media fix-ups leave the tree packed. */
     if ((ret = fdt_open_into(t, t, (int)capacity)) < 0) return ret;
