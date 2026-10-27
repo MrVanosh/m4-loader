@@ -19,7 +19,7 @@
 
 #define PROBE_DEV_ITEMS L1P_DEV_COUNT
 #define ATTEMPT_BUDGET_US 6000000u /* reported as over-budget in the log when exceeded */
-#define READ_DEADLINE_US 4000000u  /* reads (and with them the SHA-256 pass) must have started by then */
+#define READ_DEADLINE_US 14000000u  /* reads (and with them the SHA-256 pass) must have started by then */
 
 #ifdef L1_TEST
 /* host test build: fake counter and HAL supplied by tests/l1-e2e.c */

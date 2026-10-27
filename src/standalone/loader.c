@@ -252,7 +252,9 @@ static int prepare(void)
     /* Watchdog, DAPF and the opaque PCIe callback run uncached, as before. */
     m4_cache_leave();
     /* Existing bounded, read-back-checked disable of the inherited watchdog. */
-    if (m4_watchdog(scratch, 64, 0x50836c000UL, 0x508330008UL, 0x6163) != 0x574454) return 9;
+    u64 wdt_rc = m4_watchdog(scratch, 64, 0x50836c000UL, 0x508330008UL, 0x6163);
+    j616s_screen_printf("WDT rc=0x%lx ctl=0x%lx 2nd=0x%lx\n", wdt_rc, scratch[1], scratch[2]);
+    if (wdt_rc != 0x574454) return 9;
     m4_boot_profile_mark(M4_PROFILE_WATCHDOG_READY);
     /* rev 17: the Level 1 attempt runs here, before DAPF, the AOP DAPF and the PCIe callback (it needs none of them: ANS
      * sits behind its SART), so an m1n1 entry can still get the machine as iBoot left it. Boot ABI v1: the default entry

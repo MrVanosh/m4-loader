@@ -565,15 +565,18 @@ enum l1_status l1_ans_nvme(struct l1_ans *a)
     a->cc = (((cap_hi >> 5) & 0xff) & 0x40 ? 6u << 4 : 0) | (6u << 16) | (4u << 20);
     w32(a, a->cfg.nvme + L1R_NVME_CC, a->cc);
     (void)r32(a, a->cfg.nvme + L1R_NVME_CC);
+    trace(a, "csts0", r32(a, a->cfg.nvme + L1R_NVME_CSTS));
+    if (nvme_wait_rdy(a, 0, US(2000)))
+        trace(a, "rdy0_timeout", r32(a, a->cfg.nvme + L1R_NVME_CSTS));
     a->cc |= 1;
     a->st.nvme_enabled = 1;    /* before the EN store, same reason */
     w32(a, a->cfg.nvme + L1R_NVME_CC, a->cc);
-    if (nvme_wait_rdy(a, 1, US(900))) {
+    if (nvme_wait_rdy(a, 1, US(10000))) {
         trace(a, "csts", r32(a, a->cfg.nvme + L1R_NVME_CSTS));
         a->why = a->dead ? "addr-check" : "csts";
         return L1_NVME_ENABLE;
     }
-    trace(a, "nvme_rdy", 0);
+    trace(a, "nvme_rdy", ms_since(a, t0));
     nvme_state_zero(a);
     /* identify controller, identify namespace 1 (4 KiB LBAs) */
     struct nvme_cmd c;

@@ -17,7 +17,7 @@ u64 m4_watchdog(u64 *o,u64 bytes,u64 primary,u64 secondary,u64 token){
  if(bytes<64 || primary!=PRIMARY || secondary!=SECONDARY || token!=0x6163)return 0;
  volatile u32 *p=(void*)(primary+0x1c),*s=(void*)secondary;
  o[0]=0x574454;o[1]=*p;o[2]=*s;
- if((o[1]!=4 && o[1]!=0) || (o[2]!=0x7d && o[2]!=0))return 1;
+ /* any start value: write 0, verify (m1n1 wdt_disable) */
  *p=0;BARRIER();o[3]=*p;
  if(o[3])return 2;
  *s=0;BARRIER();o[4]=*s;
